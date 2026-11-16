@@ -1,8 +1,18 @@
-export default function HomePage() {
+import { redirect } from "next/navigation";
+import { AppShell } from "@/components/layout/AppShell";
+import { ParentHomeView } from "@/components/lessons/ParentHomeView";
+import { getServerProfile, homePathForRole } from "@/lib/session-server";
+
+// Despachador servidor por rol (docs/04-codificacion.md §4 Hito 1).
+export default async function HomePage() {
+  const profile = await getServerProfile();
+  if (!profile) redirect("/login");
+  if (profile.status === "PENDING_ONBOARDING") redirect("/onboarding");
+  if (profile.role !== "PARENT") redirect(homePathForRole(profile.role));
+
   return (
-    <main className="mx-auto flex min-h-dvh max-w-md flex-col items-center justify-center gap-3 p-6 text-center">
-      <h1 className="text-2xl font-bold text-primary">Escuela Dominical 5ta ACyM</h1>
-      <p className="text-fg-muted">Base del proyecto lista (Hito 0).</p>
-    </main>
+    <AppShell role={profile.role}>
+      <ParentHomeView profile={profile} />
+    </AppShell>
   );
 }

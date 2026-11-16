@@ -146,7 +146,7 @@ Para garantizar que el desarrollo siga exactamente lo diseñado en las Fases 1 a
 | Hito | Estado | Secciones obligatorias a consultar antes de codificar | Cierre obligatorio (`05`) |
 | :--- | :---: | :--- | :--- |
 | **Hito 0** — Base, BD Docker y RLS | ✅ Completado | `01` RF-01 · `02` §1, §3, §5.1 · `03` §5, §6.1, §6.2 · `04` §3 | `db:migrate` en Docker (`ed_dev`/`ed_test`) + `rowsecurity = true` + test RLS `anon` + `seed` + CSP nonce |
-| **Hito 1** — Auth, Ruteo `/` y Presencia | ⚪ Pendiente | `01` RF-01..05, RF-10 · `02` §2.3, §4.1, §6 · `03` §3, §6.5, §7 (`Auth`) · `04` §3 | `rut.test.ts` + `validators.test.ts` + integración Auth/OTP/Origin/Presencia |
+| **Hito 1** — Auth, Ruteo `/` y Presencia | ✅ Completado | `01` RF-01..05, RF-10 · `02` §2.3, §4.1, §6 · `03` §3, §6.5, §7 (`Auth`) · `04` §3 | `rut.test.ts` + `validators.test.ts` + integración Auth/OTP/Origin/Presencia |
 | **Hito 2** — Admin Clases/Usuarios/Niños/Logs | ⚪ Pendiente | `01` RF-06..10, RF-26..27 · `02` §3, §5.2 C, §6 · `03` §3.3, §4.3, §7, §8 · `04` §3 | Integración Admin (`409`, `student_class_history`, baja `INACTIVE`, logs `<= 50`) |
 | **Hito 3** — PDF 25 MB, IA, DST y Descarga Prof. | ⚪ Pendiente | `01` RF-11..18 · `02` §2.4, §4.2, §4.4, §6 · `03` §5.2, §6.3, §7 (`Unidad`/`Lección`) · `04` §3 | `pdf-gemini-push-kpi.test.ts` + integración PDF/IA/Calendario/`LESSON_AI_GENERATE` |
 | **Hito 4** — Experiencia Padres | ⚪ Pendiente | `01` RF-15..22 · `02` §4.5, §5.1–5.2 A, §6 · `03` §4.1 (`PARENT`) · `04` §3 | Integración RBAC Padres (`403` `DRAFT`/bloqueada/sin hijos `ACTIVE`, modal hijos) |

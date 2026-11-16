@@ -11,7 +11,11 @@ function createClient() {
   return postgres(url, { prepare: false, max: 1 });
 }
 
-export const sql = globalForDb.__edSql ?? createClient();
-if (process.env.NODE_ENV !== "production") globalForDb.__edSql = sql;
+// Con max: 1 todas las consultas comparten una conexión: dentro de db.transaction()
+// usar SIEMPRE `tx` (nunca `db`), o la transacción se bloquea a sí misma.
+export const pgClient = globalForDb.__edSql ?? createClient();
+if (process.env.NODE_ENV !== "production") globalForDb.__edSql = pgClient;
 
-export const db = drizzle(sql, { schema });
+export const db = drizzle(pgClient, { schema });
+export type Db = typeof db;
+export type DbOrTx = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
