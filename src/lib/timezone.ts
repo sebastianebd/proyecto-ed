@@ -114,3 +114,31 @@ export function currentMondayStartUtc(now: Date = new Date()): Date {
 export function isMondayInSantiago(now: Date = new Date()): boolean {
   return dayOfWeek(todayInSantiago(now)) === 1;
 }
+
+/** Último día calendario (`YYYY-MM-DD`) en America/Santiago en que un profesor puede editar una asistencia creada en `firstCreatedAt`. */
+export function attendanceEditDeadlineYmd(firstCreatedAt: Date): string {
+  return addCalendarDays(todayInSantiago(firstCreatedAt), 3);
+}
+
+/**
+ * Ventana de 3 días calendario desde `MIN(created_at)` en America/Santiago (`docs/02 §4.3`).
+ * Si aún no existe registro (`firstCreatedAt === null`), siempre permite crearlo (ej. domingo olvidado).
+ */
+export function isAttendanceEditWindowOpen(firstCreatedAt: Date | null, now: Date = new Date()): boolean {
+  if (!firstCreatedAt) return true;
+  return todayInSantiago(now) <= attendanceEditDeadlineYmd(firstCreatedAt);
+}
+
+/** Valida que `ymd` sea un domingo válido y `<= hoy` en America/Santiago. */
+export function validatePastOrTodaySunday(
+  ymd: string,
+  now: Date = new Date(),
+): { ok: true } | { ok: false; reason: string } {
+  if (!isSundayYmd(ymd)) {
+    return { ok: false, reason: "La fecha de asistencia debe corresponder estrictamente a un domingo" };
+  }
+  if (ymd > todayInSantiago(now)) {
+    return { ok: false, reason: "No se puede registrar asistencia en un domingo futuro" };
+  }
+  return { ok: true };
+}

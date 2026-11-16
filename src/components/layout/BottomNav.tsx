@@ -1,11 +1,11 @@
 "use client";
 
-import { Baby, BookOpen, CheckSquare, GraduationCap, ShieldCheck, User, Users } from "lucide-react";
+import { Baby, BarChart3, BookOpen, CheckSquare, GraduationCap, ShieldCheck, User, Users } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { Role } from "@/lib/auth";
 
-type IconName = "lessons" | "attendance" | "admin" | "classes" | "users" | "students" | "profile";
+type IconName = "lessons" | "attendance" | "summary" | "admin" | "classes" | "users" | "students" | "profile";
 type NavItem = { href: string; label: string; icon: IconName };
 
 const ITEMS_BY_ROLE: Record<Role, NavItem[]> = {
@@ -15,7 +15,10 @@ const ITEMS_BY_ROLE: Record<Role, NavItem[]> = {
   ],
   TEACHER: [
     { href: "/profesor/asistencia", label: "Asistencia", icon: "attendance" },
-    { href: "/perfil", label: "Mi Perfil", icon: "profile" },
+    { href: "/profesor/alumnos", label: "Alumnos", icon: "students" },
+    { href: "/profesor/lecciones", label: "Lecciones", icon: "lessons" },
+    { href: "/profesor/resumen", label: "Resumen", icon: "summary" },
+    { href: "/perfil", label: "Perfil", icon: "profile" },
   ],
   SUPER_ADMIN: [
     { href: "/admin", label: "Inicio", icon: "admin" },
@@ -29,6 +32,7 @@ const ITEMS_BY_ROLE: Record<Role, NavItem[]> = {
 function NavIcon({ name }: { name: IconName }) {
   if (name === "lessons") return <BookOpen className="h-5 w-5" />;
   if (name === "attendance") return <CheckSquare className="h-5 w-5" />;
+  if (name === "summary") return <BarChart3 className="h-5 w-5" />;
   if (name === "admin") return <ShieldCheck className="h-5 w-5" />;
   if (name === "classes") return <GraduationCap className="h-5 w-5" />;
   if (name === "users") return <Users className="h-5 w-5" />;

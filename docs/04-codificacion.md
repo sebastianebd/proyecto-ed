@@ -150,7 +150,7 @@ Para garantizar que el desarrollo siga exactamente lo diseñado en las Fases 1 a
 | **Hito 2** — Admin Clases/Usuarios/Niños/Logs | ✅ Completado | `01` RF-06..10, RF-26..27 · `02` §3, §5.2 C, §6 · `03` §3.3, §4.3, §7, §8 · `04` §3 | Integración Admin (`409`, `student_class_history`, baja `INACTIVE`, logs `<= 50`) |
 | **Hito 3** — PDF 25 MB, IA, DST y Descarga Prof. | ✅ Completado | `01` RF-11..18 · `02` §2.4, §4.2, §4.4, §6 · `03` §5.2, §6.3, §7 (`Unidad`/`Lección`) · `04` §3 | `pdf-gemini-push-kpi.test.ts` + integración PDF/IA/Calendario/`LESSON_AI_GENERATE` |
 | **Hito 4** — Experiencia Padres | ✅ Completado | `01` RF-15..22 · `02` §4.5, §5.1–5.2 A, §6 · `03` §4.1 (`PARENT`) · `04` §3 | Integración RBAC Padres (`403` `DRAFT`/bloqueada/sin hijos `ACTIVE`, modal hijos) |
-| **Hito 5** — Módulo Profesor y KPIs | ⚪ Pendiente | `01` RF-14, RF-23..25 · `02` §4.3, §4.5, §5.2 B, §6 · `03` §4.2 (`TEACHER`), §7 (`Asistencia`) | `timezone.test.ts` (DST + `MIN(created_at)`) + IDOR `TEACHER` + traslados |
+| **Hito 5** — Módulo Profesor y KPIs | ✅ Completado | `01` RF-14, RF-23..25 · `02` §4.3, §4.5, §5.2 B, §6 · `03` §4.2 (`TEACHER`), §7 (`Asistencia`) | `timezone.test.ts` (DST + `MIN(created_at)`) + IDOR `TEACHER` + traslados |
 | **Hito 6** — PWA Final, Push y Cron | ⚪ Pendiente | `01` RF-19 · `02` §4.4, §6 · `03` §6.2, §6.4 · `04` §3 | Integración Cron/Push (`410`, agrupación, SSRF) + Checklist Móvil `E2E-01..05` |
 
 ### Acciones Manuales del Usuario (Guiadas Paso a Paso)

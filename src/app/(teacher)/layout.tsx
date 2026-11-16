@@ -1,7 +1,13 @@
 import { AppShell } from "@/components/layout/AppShell";
+import { TeacherAdminBar } from "@/components/teacher/TeacherAdminBar";
 import { requireServerProfile } from "@/lib/session-server";
 
 export default async function TeacherLayout({ children }: { children: React.ReactNode }) {
   const profile = await requireServerProfile({ allowedRoles: ["TEACHER", "SUPER_ADMIN"] });
-  return <AppShell role={profile.role}>{children}</AppShell>;
+  return (
+    <AppShell role={profile.role}>
+      <TeacherAdminBar role={profile.role} />
+      {children}
+    </AppShell>
+  );
 }

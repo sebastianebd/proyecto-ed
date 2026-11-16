@@ -134,7 +134,7 @@ export function AdminDashboard({
           </span>
           <div>
             <p className="font-bold text-fg">Modo Profesor</p>
-            <p className="text-xs text-fg-muted">Asistencia, fichas y PDFs (Hito 5)</p>
+            <p className="text-xs text-fg-muted">Asistencia, fichas, lecciones y PDFs</p>
           </div>
         </Link>
 
