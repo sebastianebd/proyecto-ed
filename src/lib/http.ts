@@ -33,6 +33,18 @@ export async function parseBody<T>(req: NextRequest, schema: ZodType<T>): Promis
   return { ok: true, data: parsed.data };
 }
 
+/** Detecta un código SQLSTATE de PostgreSQL (directo o envuelto por Drizzle en `cause`). */
+export function getPgErrorInfo(err: unknown): { code?: string; constraint?: string } {
+  if (!err || typeof err !== "object") return {};
+  const obj = err as { code?: string; constraint?: string; constraint_name?: string; cause?: unknown };
+  if (obj.code) return { code: obj.code, constraint: obj.constraint ?? obj.constraint_name };
+  if (obj.cause && typeof obj.cause === "object") {
+    const c = obj.cause as { code?: string; constraint?: string; constraint_name?: string };
+    return { code: c.code, constraint: c.constraint ?? c.constraint_name };
+  }
+  return {};
+}
+
 /** Errores 500 genéricos: el detalle queda solo en logs de servidor. */
 export function withErrorHandling<A extends unknown[]>(handler: (...args: A) => Promise<NextResponse>) {
   return async (...args: A): Promise<NextResponse> => {

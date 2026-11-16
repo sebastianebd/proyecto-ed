@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { todayInSantiago } from "@/lib/timezone";
 import {
   cleanNoHtmlNoMarkdown,
   cleanString,
@@ -26,7 +27,7 @@ export const isoDateSchema = z
   }, "Fecha de calendario inválida");
 
 function santiagoDateBounds() {
-  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Santiago" }).format(new Date());
+  const today = todayInSantiago();
   const [y, m, d] = today.split("-").map(Number);
   const minDate = new Date(Date.UTC(y - 25, m - 1, d)).toISOString().slice(0, 10);
   return { today, minDate };
