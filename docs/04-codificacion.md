@@ -63,7 +63,7 @@ Proyecto_ED/
 │   ├── db/
 │   │   ├── index.ts                     # postgres(DATABASE_URL, { prepare: false, max: 1 }) + singleton dev + Drizzle
 │   │   ├── schema.ts                    # Tablas + rate_limits + student_class_history + índice parcial ACTIVE
-│   │   ├── rls.sql                      # RLS idempotente en todas las tablas (aplicado vía npm run db:migrate) + bucket unit-pdfs
+│   │   ├── rls.sql                      # RLS idempotente en todas las tablas (aplicado vía npm run db:migrate)
 │   │   └── seed.ts                      # Idempotente vía env (SEED_ADMIN_RUT, SEED_ADMIN_NAME, SEED_ADMIN_EMAIL) + 1ra clase
 │   └── lib/
 │       ├── validators/                  # Esquemas Zod compartidos Front+Back ("" -> undefined, límites exactos)
