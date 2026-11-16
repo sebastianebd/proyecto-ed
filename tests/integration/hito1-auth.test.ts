@@ -149,7 +149,7 @@ describe("Hito 1 — Anti-enumeración, cooldown y rate limits", () => {
 });
 
 describe("Hito 1 — Atomicidad OTP, fuerza bruta y race condition", () => {
-  it("bloquea OTP tras 5 intentos fallidos incluso si luego envían el código correcto", async () => {
+  it("bloquea OTP tras 5 intentos fallidos (marca used_at) incluso si luego envían el código correcto", async () => {
     await createUser({ rut: "12345670-K", email: "u@example.com", status: "ACTIVE" });
     const realCode = await issueOtpAndGetCode("12345670-K");
     const wrongCode = realCode === "000000" ? "111111" : "000000";
@@ -159,8 +159,20 @@ describe("Hito 1 — Atomicidad OTP, fuerza bruta y race condition", () => {
       expect(r.status).toBe(401);
     }
 
+    const [otpRow] = await sql`SELECT attempts, used_at FROM otp_codes ORDER BY created_at DESC LIMIT 1`;
+    expect(otpRow.attempts).toBe(5);
+    expect(otpRow.used_at).not.toBeNull();
+
+    const [{ failsBefore }] = await sql`SELECT count(*)::int AS fails_before FROM audit_logs WHERE action = 'OTP_FAILED'`.then(
+      (r) => [{ failsBefore: r[0].fails_before as number }],
+    );
     const sixth = await verifyOtpHandler(apiReq("/api/auth/verify-otp", { body: { rut: "12345670-K", code: realCode } }));
     expect(sixth.status).toBe(401);
+
+    const [{ failsAfter }] = await sql`SELECT count(*)::int AS fails_after FROM audit_logs WHERE action = 'OTP_FAILED'`.then(
+      (r) => [{ failsAfter: r[0].fails_after as number }],
+    );
+    expect(failsAfter).toBe(failsBefore);
   });
 
   it("ante race condition con Promise.all solo 1 verify-otp triunfa y crea 1 sesión", async () => {
@@ -327,5 +339,34 @@ describe("Hito 1 — Origin, sesión, logout, PENDING_ONBOARDING y presencia", (
       allowedRoles: ["TEACHER", "SUPER_ADMIN"],
     });
     expect(teacherCheck.ok).toBe(true);
+  });
+
+  it("rechaza con 401 tanto OTP expirado como sesión expirada y carga clases de SUPER_ADMIN si dicta clase", async () => {
+    const admin = await createUser({ rut: "18963546-K", email: "admin@example.com", role: "SUPER_ADMIN", status: "ACTIVE" });
+    const [cls] = await db.insert(classes).values({ name: "Juveniles" }).returning();
+    await db.insert(classTeachers).values({ classId: cls.id, teacherId: admin.id });
+
+    // OTP expirado (expires_at en el pasado) -> 401
+    const expiredCode = await issueOtpAndGetCode("18963546-K");
+    await sql`UPDATE otp_codes SET expires_at = now() - interval '1 minute' WHERE user_id = ${admin.id}`;
+    const expiredOtpRes = await verifyOtpHandler(apiReq("/api/auth/verify-otp", { body: { rut: "18963546-K", code: expiredCode } }));
+    expect(expiredOtpRes.status).toBe(401);
+
+    // Nuevo OTP válido -> sesión activa incluye clases asignadas al SUPER_ADMIN
+    await sql`DELETE FROM rate_limits WHERE key LIKE 'otp:cd:%'`;
+    const validCode = await issueOtpAndGetCode("18963546-K");
+    const okRes = await verifyOtpHandler(apiReq("/api/auth/verify-otp", { body: { rut: "18963546-K", code: validCode } }));
+    expect(okRes.status).toBe(200);
+    const cookie = extractSessionCookie(okRes);
+
+    const meRes = await meHandler(apiReq("/api/auth/me", { method: "GET", cookie }));
+    expect(meRes.status).toBe(200);
+    const meJson = (await meRes.json()) as { user: { classes: { name: string }[] } };
+    expect(meJson.user.classes.map((c) => c.name)).toEqual(["Juveniles"]);
+
+    // Sesión expirada -> 401
+    await sql`UPDATE sessions SET expires_at = now() - interval '1 second' WHERE user_id = ${admin.id}`;
+    const meExpired = await meHandler(apiReq("/api/auth/me", { method: "GET", cookie }));
+    expect(meExpired.status).toBe(401);
   });
 });

@@ -56,6 +56,7 @@ export function LoginForm() {
         return;
       }
       setInfo(body.message ?? "Si tu RUT está registrado, enviaremos un código a tu correo.");
+      setCode("");
       setStep("otp");
       setCooldown(60);
     } catch {

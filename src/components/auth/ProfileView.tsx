@@ -106,7 +106,7 @@ export function ProfileView({ profile }: { profile: UserProfile }) {
         </section>
       )}
 
-      {profile.role === "TEACHER" && (
+      {(profile.role === "TEACHER" || (profile.role === "SUPER_ADMIN" && profile.classes.length > 0)) && (
         <section className="rounded-2xl border border-border bg-surface p-5">
           <h2 className="text-base font-bold text-fg">Mis clases</h2>
           {profile.classes.length === 0 ? (

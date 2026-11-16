@@ -3,11 +3,16 @@ import type { ZodType } from "zod";
 
 export const jsonError = (status: number, message: string) => NextResponse.json({ error: message }, { status });
 
-/** IP del cliente (Vercel firma x-forwarded-for). */
+const firstIp = (raw: string | null) => raw?.split(",")[0].trim().slice(0, 64) || "";
+
+/** IP del cliente: prioriza cabeceras de borde de Vercel antes que x-forwarded-for. */
 export function getClientIp(req: NextRequest): string {
-  const forwarded = req.headers.get("x-forwarded-for");
-  if (forwarded) return forwarded.split(",")[0].trim().slice(0, 64) || "unknown";
-  return (req.headers.get("x-real-ip") ?? "unknown").slice(0, 64);
+  return (
+    firstIp(req.headers.get("x-vercel-forwarded-for")) ||
+    firstIp(req.headers.get("x-real-ip")) ||
+    firstIp(req.headers.get("x-forwarded-for")) ||
+    "unknown"
+  );
 }
 
 type ParseResult<T> = { ok: true; data: T } | { ok: false; response: NextResponse };

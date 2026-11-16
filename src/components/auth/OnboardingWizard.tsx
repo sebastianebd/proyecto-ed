@@ -20,7 +20,9 @@ export function OnboardingWizard({ profile }: { profile: UserProfile }) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const isIos =
+      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.userAgent.includes("Mac") && navigator.maxTouchPoints > 1);
     const isStandalone =
       window.matchMedia("(display-mode: standalone)").matches ||
       Boolean((navigator as { standalone?: boolean }).standalone);
@@ -141,7 +143,7 @@ export function OnboardingWizard({ profile }: { profile: UserProfile }) {
                   : "Pendiente de asignación por administración"}
               </p>
             )}
-            {profile.role === "TEACHER" && (
+            {(profile.role === "TEACHER" || (profile.role === "SUPER_ADMIN" && profile.classes.length > 0)) && (
               <p className="mt-1">
                 <strong className="text-fg">Clases asignadas:</strong>{" "}
                 {profile.classes.length > 0

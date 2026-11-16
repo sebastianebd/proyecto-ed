@@ -24,7 +24,7 @@ export type UserProfile = AuthUser & {
   classes: AssignedClass[];
 };
 
-/** Enriquece la sesión con hijos vinculados (PARENT) y clases asignadas (TEACHER). */
+/** Enriquece la sesión con hijos vinculados (PARENT) y clases asignadas (TEACHER / SUPER_ADMIN). */
 export async function loadUserProfile(user: AuthUser): Promise<UserProfile> {
   const [children, assigned] = await Promise.all([
     user.role === "PARENT"
@@ -42,7 +42,7 @@ export async function loadUserProfile(user: AuthUser): Promise<UserProfile> {
           .innerJoin(classes, eq(students.classId, classes.id))
           .where(eq(parentStudents.parentId, user.id))
       : Promise.resolve([]),
-    user.role === "TEACHER"
+    user.role === "TEACHER" || user.role === "SUPER_ADMIN"
       ? db
           .select({
             id: classes.id,

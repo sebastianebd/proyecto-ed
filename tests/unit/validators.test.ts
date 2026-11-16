@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ageRangeSchema,
   attendanceObservationSchema,
@@ -107,12 +107,23 @@ describe("Hito 1 — Validadores Zod compartidos", () => {
       expect(preferencesSchema.safeParse(["a".repeat(31)]).success).toBe(false);
     });
 
-    it("valida birthDate real, no futura y <= 25 años", () => {
+    it("valida birthDate real, no futura (en America/Santiago) y <= 25 años", () => {
       expect(birthDateSchema.parse("")).toBeUndefined();
       expect(birthDateSchema.safeParse("2020-05-10").success).toBe(true);
       expect(birthDateSchema.safeParse("2025-02-30").success).toBe(false);
       expect(birthDateSchema.safeParse("2099-01-01").success).toBe(false);
       expect(birthDateSchema.safeParse("1990-01-01").success).toBe(false);
+
+      // 2026-05-11 01:30Z corresponde a 2026-05-10 21:30 en Chile (CLT UTC-4)
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-05-11T01:30:00Z"));
+      expect(birthDateSchema.safeParse("2026-05-10").success).toBe(true);
+      expect(birthDateSchema.safeParse("2026-05-11").success).toBe(false);
+      vi.useRealTimers();
     });
   });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });

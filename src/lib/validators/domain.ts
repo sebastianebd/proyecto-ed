@@ -25,19 +25,19 @@ export const isoDateSchema = z
     return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
   }, "Fecha de calendario inválida");
 
-/** Fecha de nacimiento opcional (`""` -> `undefined`), no futura y <= 25 años atrás. */
+function santiagoDateBounds() {
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Santiago" }).format(new Date());
+  const [y, m, d] = today.split("-").map(Number);
+  const minDate = new Date(Date.UTC(y - 25, m - 1, d)).toISOString().slice(0, 10);
+  return { today, minDate };
+}
+
+/** Fecha de nacimiento opcional (`""` -> `undefined`), no futura y <= 25 años atrás (hora Chile). */
 export const birthDateSchema = z.preprocess(
   emptyToUndefined,
   isoDateSchema
-    .refine((s) => {
-      const today = new Date().toISOString().slice(0, 10);
-      return s <= today;
-    }, "La fecha de nacimiento no puede ser futura")
-    .refine((s) => {
-      const d = new Date();
-      d.setUTCFullYear(d.getUTCFullYear() - 25);
-      return s >= d.toISOString().slice(0, 10);
-    }, "La fecha de nacimiento no puede superar 25 años de antigüedad")
+    .refine((s) => s <= santiagoDateBounds().today, "La fecha de nacimiento no puede ser futura")
+    .refine((s) => s >= santiagoDateBounds().minDate, "La fecha de nacimiento no puede superar 25 años de antigüedad")
     .optional(),
 );
 

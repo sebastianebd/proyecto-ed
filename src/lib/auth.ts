@@ -179,14 +179,16 @@ export async function verifyOtp(params: { rut: string; code: string; ip: string;
 
     const pending = await tx.execute(sql`
       SELECT id, code_hash FROM otp_codes
-      WHERE user_id = ${user.id} AND used_at IS NULL AND expires_at > now()
+      WHERE user_id = ${user.id} AND used_at IS NULL AND expires_at > now() AND attempts < ${OTP_MAX_ATTEMPTS}
       ORDER BY created_at DESC LIMIT 1 FOR UPDATE`);
     if (pending.length === 0) return { ok: false, reason: "INVALID" };
     const otp = pending[0] as { id: string; code_hash: string };
 
     if (!safeEqualHex(otp.code_hash, hashOtp(params.rut, params.code))) {
       await tx.execute(sql`
-        UPDATE otp_codes SET attempts = attempts + 1
+        UPDATE otp_codes
+        SET attempts = attempts + 1,
+            used_at = CASE WHEN attempts + 1 >= ${OTP_MAX_ATTEMPTS} THEN now() ELSE used_at END
         WHERE id = ${otp.id} AND used_at IS NULL AND attempts < ${OTP_MAX_ATTEMPTS}`);
       await recordAuditLog({ actorUserId: user.id, actorRole: user.role, action: "OTP_FAILED", entityType: "user", entityId: user.id }, tx);
       return { ok: false, reason: "INVALID" };
