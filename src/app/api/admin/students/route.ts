@@ -69,18 +69,27 @@ export const POST = withErrorHandling(async (req: NextRequest) => {
   const parsed = await parseBody(req, adminCreateStudentSchema);
   if (!parsed.ok) return parsed.response;
 
-  const [cls] = await db.select({ id: classes.id }).from(classes).where(eq(classes.id, parsed.data.classId)).limit(1);
-  if (!cls) return jsonError(400, "La clase seleccionada no existe");
+  const [cls] = await db
+    .select({ id: classes.id, status: classes.status })
+    .from(classes)
+    .where(eq(classes.id, parsed.data.classId))
+    .limit(1);
+  if (!cls || cls.status !== "ACTIVE") {
+    return jsonError(400, "La clase seleccionada no existe o está archivada");
+  }
 
   const uniqueParents = Array.from(new Map(parsed.data.parents.map((p) => [p.parentId, p])).values());
   if (uniqueParents.length > 0) {
     const parentIds = uniqueParents.map((p) => p.parentId);
     const foundParents = await db
-      .select({ id: users.id, role: users.role })
+      .select({ id: users.id, role: users.role, status: users.status })
       .from(users)
       .where(inArray(users.id, parentIds));
-    if (foundParents.length !== parentIds.length || foundParents.some((u) => u.role !== "PARENT")) {
-      return jsonError(400, "Todos los vínculos familiares deben corresponder a usuarios con rol Padre/Tutor");
+    if (
+      foundParents.length !== parentIds.length ||
+      foundParents.some((u) => u.role !== "PARENT" || u.status === "INACTIVE")
+    ) {
+      return jsonError(400, "Todos los vínculos familiares deben corresponder a padres activos o pendientes");
     }
   }
 

@@ -41,3 +41,26 @@ export function santiagoLocalToUtc(ymd: string, hour = 0, minute = 0, second = 0
 
 export const santiagoDayStartUtc = (ymd: string) => santiagoLocalToUtc(ymd, 0, 0, 0, 0);
 export const santiagoDayEndUtc = (ymd: string) => santiagoLocalToUtc(ymd, 23, 59, 59, 999);
+
+const PARTS_FMT = new Intl.DateTimeFormat("en-GB", {
+  timeZone: TZ,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
+/** Formateo determinista DD-MM-YYYY en America/Santiago (seguro para SSR/hidratación). */
+export function formatSantiagoDate(input: string | Date): string {
+  const parts = Object.fromEntries(PARTS_FMT.formatToParts(new Date(input)).map((p) => [p.type, p.value]));
+  return `${parts.day}-${parts.month}-${parts.year}`;
+}
+
+/** Formateo determinista DD-MM-YYYY HH:mm en America/Santiago (seguro para SSR/hidratación). */
+export function formatSantiagoDateTime(input: string | Date): string {
+  const parts = Object.fromEntries(PARTS_FMT.formatToParts(new Date(input)).map((p) => [p.type, p.value]));
+  const hour = parts.hour === "24" ? "00" : parts.hour;
+  return `${parts.day}-${parts.month}-${parts.year} ${hour}:${parts.minute}`;
+}

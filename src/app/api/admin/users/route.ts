@@ -1,37 +1,18 @@
-import { desc, eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { classes, classTeachers, parentStudents, users } from "@/db/schema";
+import { users } from "@/db/schema";
+import { listAdminUsers } from "@/lib/admin-users";
 import { recordAuditLog } from "@/lib/audit";
 import { requireAuth } from "@/lib/auth";
 import { getPgErrorInfo, jsonError, parseBody, withErrorHandling } from "@/lib/http";
 import { adminCreateUserSchema } from "@/lib/validators";
 
-const ONLINE_WINDOW_MS = 90_000;
-
 export const GET = withErrorHandling(async (req: NextRequest) => {
   const auth = await requireAuth(req, { allowedRoles: ["SUPER_ADMIN"] });
   if (!auth.ok) return auth.response;
 
-  const nowMs = Date.now();
-  const [userRows, teacherClasses, parentLinks] = await Promise.all([
-    db.select().from(users).orderBy(desc(users.createdAt)),
-    db
-      .select({ teacherId: classTeachers.teacherId, classId: classes.id, className: classes.name })
-      .from(classTeachers)
-      .innerJoin(classes, eq(classTeachers.classId, classes.id)),
-    db.select({ parentId: parentStudents.parentId, studentId: parentStudents.studentId }).from(parentStudents),
-  ]);
-
-  const items = userRows.map((u) => ({
-    ...u,
-    isOnline:
-      u.status === "ACTIVE" && u.lastSeenAt !== null && nowMs - new Date(u.lastSeenAt).getTime() <= ONLINE_WINDOW_MS,
-    classes: teacherClasses.filter((tc) => tc.teacherId === u.id).map((tc) => ({ id: tc.classId, name: tc.className })),
-    childrenCount: parentLinks.filter((pl) => pl.parentId === u.id).length,
-  }));
-
-  return NextResponse.json({ items });
+  const { items, nowMs } = await listAdminUsers();
+  return NextResponse.json({ items, serverNowMs: nowMs });
 });
 
 export const POST = withErrorHandling(async (req: NextRequest) => {
@@ -53,7 +34,16 @@ export const POST = withErrorHandling(async (req: NextRequest) => {
           role: parsed.data.role,
           status: "PENDING_ONBOARDING",
         })
-        .returning();
+        .returning({
+          id: users.id,
+          rut: users.rut,
+          fullName: users.fullName,
+          email: users.email,
+          phone: users.phone,
+          role: users.role,
+          status: users.status,
+          createdAt: users.createdAt,
+        });
 
       await recordAuditLog(
         {

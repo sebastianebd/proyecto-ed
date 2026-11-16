@@ -3,7 +3,8 @@
 import { Baby, Edit3, History, Plus, UserX } from "lucide-react";
 import { useState } from "react";
 import { formatRutForInput } from "@/lib/rut";
-import { adminCreateStudentSchema, adminUpdateStudentSchema } from "@/lib/validators";
+import { formatSantiagoDate } from "@/lib/timezone";
+import { adminCreateStudentSchema, adminUpdateStudentSchema, cleanString } from "@/lib/validators";
 
 const SUGGESTED_PREFS = ["dibujar", "pintar", "cantar", "escribir"];
 
@@ -40,8 +41,12 @@ export function StudentsManager({
   const [openHistoryId, setOpenHistoryId] = useState<string | null>(null);
 
   const activeClasses = classOptions.filter((c) => c.status === "ACTIVE");
+  const selectableClasses =
+    editing && !activeClasses.some((c) => c.id === editing.classId)
+      ? [...activeClasses, ...classOptions.filter((c) => c.id === editing.classId)]
+      : activeClasses;
   const [fullName, setFullName] = useState("");
-  const [classId, setClassId] = useState(activeClasses[0]?.id ?? classOptions[0]?.id ?? "");
+  const [classId, setClassId] = useState(activeClasses[0]?.id ?? "");
   const [birthDate, setBirthDate] = useState("");
   const [specialCare, setSpecialCare] = useState("");
   const [preferences, setPreferences] = useState<string[]>([]);
@@ -77,7 +82,7 @@ export function StudentsManager({
   function resetForm() {
     setEditing(null);
     setFullName("");
-    setClassId(activeClasses[0]?.id ?? classOptions[0]?.id ?? "");
+    setClassId(activeClasses[0]?.id ?? "");
     setBirthDate("");
     setSpecialCare("");
     setPreferences([]);
@@ -95,10 +100,22 @@ export function StudentsManager({
     });
   }
 
+  const prefTagSchema = cleanString(1, 30, "Preferencia");
+
   function addCustomPref() {
-    const clean = customPref.trim().slice(0, 30);
-    if (!clean || preferences.includes(clean) || preferences.length >= 10) return;
-    setPreferences((prev) => [...prev, clean]);
+    setError(null);
+    const parsed = prefTagSchema.safeParse(customPref);
+    if (!parsed.success) {
+      setError(parsed.error.issues[0]?.message ?? "Preferencia inválida");
+      return;
+    }
+    if (preferences.length >= 10) {
+      setError("Máximo 10 preferencias");
+      return;
+    }
+    if (!preferences.includes(parsed.data)) {
+      setPreferences((prev) => [...prev, parsed.data]);
+    }
     setCustomPref("");
   }
 
@@ -124,6 +141,22 @@ export function StudentsManager({
     setError(null);
     setNotice(null);
 
+    let nextPreferences = preferences;
+    if (customPref.trim().length > 0) {
+      const parsedPref = prefTagSchema.safeParse(customPref);
+      if (!parsedPref.success) {
+        setError(parsedPref.error.issues[0]?.message ?? "Preferencia personalizada inválida");
+        return;
+      }
+      if (!nextPreferences.includes(parsedPref.data)) {
+        if (nextPreferences.length >= 10) {
+          setError("Máximo 10 preferencias");
+          return;
+        }
+        nextPreferences = [...nextPreferences, parsedPref.data];
+      }
+    }
+
     const parentsArray = Array.from(linkedParents.entries()).map(([parentId, relationship]) => ({
       parentId,
       relationship,
@@ -135,7 +168,7 @@ export function StudentsManager({
         classId,
         birthDate: birthDate.trim() === "" ? null : birthDate,
         specialCare: specialCare.trim() === "" ? null : specialCare,
-        preferences,
+        preferences: nextPreferences,
         preferencesNotes: preferencesNotes.trim() === "" ? null : preferencesNotes,
         parents: parentsArray,
       });
@@ -150,7 +183,7 @@ export function StudentsManager({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(parsed.data),
         });
-        const body = (await res.json()) as { error?: string };
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
         if (!res.ok) {
           setError(body.error ?? "No se pudo actualizar");
           return;
@@ -158,6 +191,8 @@ export function StudentsManager({
         await reload();
         setNotice(classId !== editing.classId ? "Alumno trasladado conservando historial" : "Alumno actualizado");
         resetForm();
+      } catch {
+        setError("Error de conexión al guardar alumno");
       } finally {
         setBusy(false);
       }
@@ -169,7 +204,7 @@ export function StudentsManager({
       classId,
       birthDate,
       specialCare,
-      preferences,
+      preferences: nextPreferences,
       preferencesNotes,
       parents: parentsArray,
     });
@@ -185,7 +220,7 @@ export function StudentsManager({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(parsed.data),
       });
-      const body = (await res.json()) as { error?: string };
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) {
         setError(body.error ?? "No se pudo crear alumno");
         return;
@@ -193,6 +228,8 @@ export function StudentsManager({
       await reload();
       setNotice("Alumno registrado con historial inicial");
       resetForm();
+    } catch {
+      setError("Error de conexión al registrar alumno");
     } finally {
       setBusy(false);
     }
@@ -201,6 +238,7 @@ export function StudentsManager({
   async function toggleStatus(s: AdminStudentItem) {
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       const nextStatus = s.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
       const res = await fetch(`/api/admin/students/${s.id}`, {
@@ -208,10 +246,15 @@ export function StudentsManager({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: nextStatus }),
       });
-      if (res.ok) {
-        await reload();
-        setNotice(nextStatus === "INACTIVE" ? `${s.fullName} dado de baja (historial conservado)` : `${s.fullName} reactivado`);
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        setError(body.error ?? "No se pudo actualizar el estado del alumno");
+        return;
       }
+      await reload();
+      setNotice(nextStatus === "INACTIVE" ? `${s.fullName} dado de baja (historial conservado)` : `${s.fullName} reactivado`);
+    } catch {
+      setError("Error de conexión al actualizar estado");
     } finally {
       setBusy(false);
     }
@@ -255,8 +298,8 @@ export function StudentsManager({
                 onChange={(e) => setClassId(e.target.value)}
                 className="min-h-11 w-full rounded-xl border border-border bg-surface px-3 text-sm text-fg"
               >
-                {classOptions.map((c) => (
-                  <option key={c.id} value={c.id}>
+                {selectableClasses.map((c) => (
+                  <option key={c.id} value={c.id} disabled={c.status === "ARCHIVED"}>
                     {c.name} {c.status === "ARCHIVED" ? "(Archivada)" : ""}
                   </option>
                 ))}
@@ -482,11 +525,8 @@ export function StudentsManager({
                 <ul className="mt-1.5 space-y-1 text-fg-muted">
                   {s.classHistory.map((h) => (
                     <li key={h.id}>
-                      <strong>{h.className}</strong>: desde{" "}
-                      {new Date(h.assignedAt).toLocaleDateString("es-CL", { timeZone: "America/Santiago" })}
-                      {h.unassignedAt
-                        ? ` hasta ${new Date(h.unassignedAt).toLocaleDateString("es-CL", { timeZone: "America/Santiago" })}`
-                        : " (Actual)"}
+                      <strong>{h.className}</strong>: desde {formatSantiagoDate(h.assignedAt)}
+                      {h.unassignedAt ? ` hasta ${formatSantiagoDate(h.unassignedAt)}` : " (Actual)"}
                     </li>
                   ))}
                 </ul>

@@ -2,6 +2,7 @@
 
 import { ChevronLeft, ChevronRight, ScrollText } from "lucide-react";
 import { useState } from "react";
+import { formatSantiagoDateTime } from "@/lib/timezone";
 
 const AUDIT_ACTIONS = [
   "OTP_REQUESTED", "OTP_FAILED", "LOGIN_OTP", "ONBOARDING_COMPLETED", "LOGOUT", "SESSION_REVOKED",
@@ -50,9 +51,11 @@ export function AuditLogsViewer({
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function fetchLogs(nextPage: number, nextLimit = limit) {
     setLoading(true);
+    setError(null);
     try {
       const sp = new URLSearchParams({ page: String(nextPage), limit: String(nextLimit) });
       if (action) sp.set("action", action);
@@ -62,18 +65,23 @@ export function AuditLogsViewer({
       if (to) sp.set("to", to);
 
       const res = await fetch(`/api/admin/audit-logs?${sp.toString()}`);
-      if (res.ok) {
-        const data = (await res.json()) as {
-          items: AuditLogItem[];
-          page: number;
-          total: number;
-          totalPages: number;
-        };
-        setItems(data.items);
-        setPage(data.page);
-        setTotal(data.total);
-        setTotalPages(data.totalPages);
+      const data = (await res.json().catch(() => ({}))) as {
+        items?: AuditLogItem[];
+        page?: number;
+        total?: number;
+        totalPages?: number;
+        error?: string;
+      };
+      if (!res.ok || !data.items) {
+        setError(data.error ?? "No se pudieron cargar los logs de auditoría");
+        return;
       }
+      setItems(data.items);
+      setPage(data.page ?? nextPage);
+      setTotal(data.total ?? data.items.length);
+      setTotalPages(data.totalPages ?? 1);
+    } catch {
+      setError("Error de conexión al consultar auditoría");
     } finally {
       setLoading(false);
     }
@@ -185,6 +193,7 @@ export function AuditLogsViewer({
       </section>
 
       <section className={`space-y-2.5 ${loading ? "opacity-60" : ""}`}>
+        {error && <p className="rounded-xl bg-danger-bg px-3 py-2 text-xs text-danger">{error}</p>}
         <p className="text-xs text-fg-muted tabular-nums">
           Total: {total} eventos · Página {page} de {totalPages}
         </p>
@@ -198,9 +207,7 @@ export function AuditLogsViewer({
             <article key={log.id} className="rounded-2xl border border-border bg-surface p-3.5 text-xs">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="rounded-full bg-tint px-2.5 py-0.5 font-bold text-tint-text">{log.action}</span>
-                <time className="tabular-nums text-fg-muted">
-                  {new Date(log.createdAt).toLocaleString("es-CL", { timeZone: "America/Santiago" })}
-                </time>
+                <time className="tabular-nums text-fg-muted">{formatSantiagoDateTime(log.createdAt)}</time>
               </div>
               <p className="mt-1.5 text-fg">
                 <strong>Actor:</strong> {log.actorName ?? "Sistema"} {log.actorRole ? `(${log.actorRole})` : ""}{" "}

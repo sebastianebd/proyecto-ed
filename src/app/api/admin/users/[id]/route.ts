@@ -33,27 +33,29 @@ export const PATCH = withErrorHandling(async (req: NextRequest, ctx: RouteCtx) =
   }
 
   const emailChanged = parsed.data.email !== undefined && parsed.data.email !== existing.email;
+  const roleChanged = parsed.data.role !== undefined && parsed.data.role !== existing.role;
   const deactivated = parsed.data.status === "INACTIVE" && existing.status !== "INACTIVE";
   const nextStatus =
     parsed.data.status === "ACTIVE" && existing.status === "INACTIVE" && !existing.onboardedAt
       ? "PENDING_ONBOARDING"
       : parsed.data.status;
 
+  const patchValues: Partial<typeof users.$inferInsert> = {};
+  if (parsed.data.fullName !== undefined) patchValues.fullName = parsed.data.fullName;
+  if (parsed.data.email !== undefined) patchValues.email = parsed.data.email;
+  if (parsed.data.phone !== undefined) patchValues.phone = parsed.data.phone ?? null;
+  if (parsed.data.role !== undefined) patchValues.role = parsed.data.role;
+  if (nextStatus !== undefined) patchValues.status = nextStatus;
+
+  if (Object.keys(patchValues).length === 0) {
+    return jsonError(400, "Debes enviar al menos un campo para actualizar");
+  }
+
   try {
     const updated = await db.transaction(async (tx) => {
-      const [row] = await tx
-        .update(users)
-        .set({
-          ...(parsed.data.fullName !== undefined ? { fullName: parsed.data.fullName } : {}),
-          ...(parsed.data.email !== undefined ? { email: parsed.data.email } : {}),
-          ...(parsed.data.phone !== undefined ? { phone: parsed.data.phone ?? null } : {}),
-          ...(parsed.data.role !== undefined ? { role: parsed.data.role } : {}),
-          ...(nextStatus !== undefined ? { status: nextStatus } : {}),
-        })
-        .where(eq(users.id, id))
-        .returning();
+      const [row] = await tx.update(users).set(patchValues).where(eq(users.id, id)).returning();
 
-      if (emailChanged || deactivated) {
+      if (emailChanged || deactivated || roleChanged) {
         await revokeAllSessions(id, tx);
         await invalidatePendingOtps(id, tx);
       }

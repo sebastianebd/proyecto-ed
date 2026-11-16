@@ -22,7 +22,16 @@ export const PATCH = withErrorHandling(async (req: NextRequest, ctx: RouteCtx) =
   const [existing] = await db.select().from(classes).where(eq(classes.id, id)).limit(1);
   if (!existing) return jsonError(404, "Clase no encontrada");
 
+  const patchValues: Partial<typeof classes.$inferInsert> = {};
+  if (parsed.data.name !== undefined) patchValues.name = parsed.data.name;
+  if (parsed.data.ageRange !== undefined) patchValues.ageRange = parsed.data.ageRange ?? null;
+  if (parsed.data.status !== undefined) patchValues.status = parsed.data.status;
+
   const teacherIds = parsed.data.teacherIds ? [...new Set(parsed.data.teacherIds)] : undefined;
+  if (Object.keys(patchValues).length === 0 && teacherIds === undefined) {
+    return jsonError(400, "Debes enviar al menos un campo para actualizar");
+  }
+
   if (teacherIds && teacherIds.length > 0) {
     const valid = await db
       .select({ id: users.id, role: users.role, status: users.status })
@@ -37,15 +46,10 @@ export const PATCH = withErrorHandling(async (req: NextRequest, ctx: RouteCtx) =
   }
 
   const updated = await db.transaction(async (tx) => {
-    const [row] = await tx
-      .update(classes)
-      .set({
-        ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
-        ...(parsed.data.ageRange !== undefined ? { ageRange: parsed.data.ageRange ?? null } : {}),
-        ...(parsed.data.status !== undefined ? { status: parsed.data.status } : {}),
-      })
-      .where(eq(classes.id, id))
-      .returning();
+    const row =
+      Object.keys(patchValues).length > 0
+        ? (await tx.update(classes).set(patchValues).where(eq(classes.id, id)).returning())[0]
+        : existing;
 
     if (teacherIds !== undefined) {
       await tx.delete(classTeachers).where(eq(classTeachers.classId, id));

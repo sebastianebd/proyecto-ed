@@ -92,6 +92,8 @@ export function ClassesManager({
       await reload();
       setNotice(editingId ? "Clase actualizada" : "Clase creada");
       resetForm();
+    } catch {
+      setError("Error de conexión al guardar la clase");
     } finally {
       setBusy(false);
     }
@@ -99,6 +101,7 @@ export function ClassesManager({
 
   async function toggleStatus(c: ClassItem) {
     setError(null);
+    setNotice(null);
     setBusy(true);
     try {
       const nextStatus = c.status === "ACTIVE" ? "ARCHIVED" : "ACTIVE";
@@ -107,10 +110,15 @@ export function ClassesManager({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: nextStatus }),
       });
-      if (res.ok) {
-        await reload();
-        setNotice(nextStatus === "ARCHIVED" ? "Clase archivada" : "Clase reactivada");
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        setError(body.error ?? "No se pudo cambiar el estado de la clase");
+        return;
       }
+      await reload();
+      setNotice(nextStatus === "ARCHIVED" ? "Clase archivada" : "Clase reactivada");
+    } catch {
+      setError("Error de conexión al actualizar la clase");
     } finally {
       setBusy(false);
     }

@@ -19,8 +19,10 @@ export function AdminDashboard({
   const [selectedClass, setSelectedClass] = useState("");
   const [kpis, setKpis] = useState<KpiSummary>(initialKpis);
   const [loading, setLoading] = useState(false);
+  const [kpiError, setKpiError] = useState<string | null>(null);
 
   useEffect(() => {
+    setKpiError(null);
     if (!selectedClass) {
       setKpis(initialKpis);
       return;
@@ -28,9 +30,13 @@ export function AdminDashboard({
     let cancelled = false;
     setLoading(true);
     fetch(`/api/admin/kpis?classId=${encodeURIComponent(selectedClass)}`)
-      .then((r) => r.json())
-      .then((data: { kpis?: KpiSummary }) => {
-        if (!cancelled && data.kpis) setKpis(data.kpis);
+      .then(async (r) => {
+        const data = (await r.json().catch(() => ({}))) as { kpis?: KpiSummary; error?: string };
+        if (!r.ok || !data.kpis) throw new Error(data.error ?? "No se pudieron cargar los KPIs");
+        if (!cancelled) setKpis(data.kpis);
+      })
+      .catch((err) => {
+        if (!cancelled) setKpiError(err instanceof Error ? err.message : "Error de conexión al cargar KPIs");
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -99,6 +105,7 @@ export function AdminDashboard({
             </div>
           ))}
         </div>
+        {kpiError && <p className="rounded-xl bg-danger-bg px-3 py-2 text-xs text-danger">{kpiError}</p>}
       </section>
 
       <section className="grid gap-3 sm:grid-cols-2">

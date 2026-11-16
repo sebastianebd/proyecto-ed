@@ -103,6 +103,30 @@ describe("Hito 2 — RBAC, Clases, Unicidad y Protección Super Admin", () => {
       expect(denied.status).toBe(403);
     }
 
+    // Mutaciones POST/PATCH también rechazan a no-admin con 403
+    expect(
+      (await classesPostHandler(req("/api/admin/classes", { method: "POST", cookie: teacherCookie, body: { name: "X" } }))).status,
+    ).toBe(403);
+    expect(
+      (await usersPostHandler(
+        req("/api/admin/users", {
+          method: "POST",
+          cookie: teacherCookie,
+          body: { rut: "12345670-K", fullName: "Ana", email: "a@b.cl", role: "PARENT" },
+        }),
+      )).status,
+    ).toBe(403);
+    expect(
+      (await studentsPostHandler(
+        req("/api/admin/students", {
+          method: "POST",
+          cookie: teacherCookie,
+          body: { fullName: "Nino", classId: "550e8400-e29b-41d4-a716-446655440000" },
+        }),
+      )).status,
+    ).toBe(403);
+    expect((await adminKpisHandler(req("/api/admin/kpis?classId=no-uuid", { cookie: adminCookie }))).status).toBe(400);
+
     const badUuid = await patchUserHandler(
       req("/api/admin/users/no-es-uuid", { method: "PATCH", cookie: adminCookie, body: { fullName: "Otro Nombre" } }),
       { params: Promise.resolve({ id: "no-es-uuid" }) },
@@ -362,10 +386,123 @@ describe("Hito 2 — Alumnos (Historial de clases), Auditoría paginada y KPIs",
 
     const p2Filtered = await auditLogsHandler(
       req("/api/admin/audit-logs?page=1&limit=50&action=CLASS_CREATE", { cookie: adminCookie }),
-      );
+    );
     const b2 = (await p2Filtered.json()) as { items: { action: string }[]; total: number };
     expect(b2.total).toBe(27);
     expect(b2.items.every((i) => i.action === "CLASS_CREATE")).toBe(true);
+
+    // Filtros por actorUserId, actorRole y rango from/to en America/Santiago
+    const todayCl = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Santiago" }).format(new Date());
+    const byActor = await auditLogsHandler(
+      req(`/api/admin/audit-logs?actorUserId=${admin.id}&actorRole=SUPER_ADMIN&from=${todayCl}&to=${todayCl}`, {
+        cookie: adminCookie,
+      }),
+    );
+    expect(byActor.status).toBe(200);
+    expect(((await byActor.json()) as { total: number }).total).toBe(55);
+  });
+
+  it("H2-01/H2-02/H2-05: PATCH relacional puro sin 500, bloqueo ARCHIVED/INACTIVE, PENDING_ONBOARDING OK, cambio rol revoca sesión", async () => {
+    const { cookie: adminCookie } = await createUserWithSession({
+      rut: "18963546-K",
+      email: "admin@example.com",
+      role: "SUPER_ADMIN",
+    });
+    const { user: teacher, cookie: teacherCookie } = await createUserWithSession({
+      rut: "12345670-K",
+      email: "profe@example.com",
+      role: "TEACHER",
+    });
+    const { user: pendingParent } = await createUserWithSession({
+      rut: "987654-5",
+      email: "pendiente@example.com",
+      role: "PARENT",
+      status: "PENDING_ONBOARDING",
+    });
+    const { user: inactiveParent } = await createUserWithSession({
+      rut: "11222333-9",
+      email: "inactivo@example.com",
+      role: "PARENT",
+      status: "INACTIVE",
+    });
+
+    const [activeCls] = await db.insert(classes).values({ name: "Activa" }).returning();
+    const [archivedCls] = await db.insert(classes).values({ name: "Archivada", status: "ARCHIVED" }).returning();
+
+    // H2-01: PATCH solo { teacherIds } y cuerpo vacío {}
+    const patchOnlyTeachers = await patchClassHandler(
+      req(`/api/admin/classes/${activeCls.id}`, { method: "PATCH", cookie: adminCookie, body: { teacherIds: [teacher.id] } }),
+      { params: Promise.resolve({ id: activeCls.id }) },
+    );
+    expect(patchOnlyTeachers.status).toBe(200);
+    expect(
+      (await patchClassHandler(
+        req(`/api/admin/classes/${activeCls.id}`, { method: "PATCH", cookie: adminCookie, body: {} }),
+        { params: Promise.resolve({ id: activeCls.id }) },
+      )).status,
+    ).toBe(400);
+    expect(
+      (await patchUserHandler(
+        req(`/api/admin/users/${teacher.id}`, { method: "PATCH", cookie: adminCookie, body: {} }),
+        { params: Promise.resolve({ id: teacher.id }) },
+      )).status,
+    ).toBe(400);
+
+    // H2-02: rechaza clase ARCHIVED y padre INACTIVE; acepta padre PENDING_ONBOARDING
+    const archivedStudentRes = await studentsPostHandler(
+      req("/api/admin/students", {
+        method: "POST",
+        cookie: adminCookie,
+        body: { fullName: "Alumno Malo", classId: archivedCls.id, parents: [] },
+      }),
+    );
+    expect(archivedStudentRes.status).toBe(400);
+
+    const inactiveParentRes = await studentsPostHandler(
+      req("/api/admin/students", {
+        method: "POST",
+        cookie: adminCookie,
+        body: { fullName: "Alumno Malo", classId: activeCls.id, parents: [{ parentId: inactiveParent.id }] },
+      }),
+    );
+    expect(inactiveParentRes.status).toBe(400);
+
+    const okStudentRes = await studentsPostHandler(
+      req("/api/admin/students", {
+        method: "POST",
+        cookie: adminCookie,
+        body: { fullName: "Alumno Ok", classId: activeCls.id, parents: [] },
+      }),
+    );
+    expect(okStudentRes.status).toBe(201);
+    const { item: student } = (await okStudentRes.json()) as { item: { id: string } };
+
+    // H2-01 + H2-02: PATCH alumno solo con { parents } vinculando padre PENDING_ONBOARDING
+    const patchOnlyParents = await patchStudentHandler(
+      req(`/api/admin/students/${student.id}`, {
+        method: "PATCH",
+        cookie: adminCookie,
+        body: { parents: [{ parentId: pendingParent.id, relationship: "Mamá" }] },
+      }),
+      { params: Promise.resolve({ id: student.id }) },
+    );
+    expect(patchOnlyParents.status).toBe(200);
+
+    // H2-01: PATCH alumno vacío -> 400
+    expect(
+      (await patchStudentHandler(
+        req(`/api/admin/students/${student.id}`, { method: "PATCH", cookie: adminCookie, body: {} }),
+        { params: Promise.resolve({ id: student.id }) },
+      )).status,
+    ).toBe(400);
+
+    // H2-05: cambio de rol revoca sesión activa
+    const roleChangeRes = await patchUserHandler(
+      req(`/api/admin/users/${teacher.id}`, { method: "PATCH", cookie: adminCookie, body: { role: "PARENT" } }),
+      { params: Promise.resolve({ id: teacher.id }) },
+    );
+    expect(roleChangeRes.status).toBe(200);
+    expect((await meHandler(req("/api/auth/me", { cookie: teacherCookie }))).status).toBe(401);
   });
 
   it("calcula KPIs reales excluyendo padres INACTIVE, alumnos sin padre activo y semanas pausadas", async () => {
@@ -384,16 +521,17 @@ describe("Hito 2 — Alumnos (Historial de clases), Auditoría paginada y KPIs",
 
     const [cls] = await db.insert(classes).values({ name: "Primarios" }).returning();
     const { user: activeParent } = await createUserWithSession({ rut: "12345670-K", email: "p1@example.com", role: "PARENT", status: "ACTIVE" });
-    const { user: inactiveParent } = await createUserWithSession({ rut: "987654-5", email: "p2@example.com", role: "PARENT", status: "INACTIVE" });
+    const { user: laterInactiveParent } = await createUserWithSession({ rut: "987654-5", email: "p2@example.com", role: "PARENT", status: "ACTIVE" });
 
-    // 2 alumnos: s1 con padre activo + inactivo, s2 sin padres vinculados
+    // 2 alumnos: s1 con padre activo + otro padre luego dado de baja, s2 sin padres vinculados
     const s1Res = await studentsPostHandler(
       req("/api/admin/students", {
         method: "POST",
         cookie: adminCookie,
-        body: { fullName: "Alumno Con Padre", classId: cls.id, parents: [{ parentId: activeParent.id }, { parentId: inactiveParent.id }] },
+        body: { fullName: "Alumno Con Padre", classId: cls.id, parents: [{ parentId: activeParent.id }, { parentId: laterInactiveParent.id }] },
       }),
     );
+    await db.update(users).set({ status: "INACTIVE" }).where(eq(users.id, laterInactiveParent.id));
     const s2Res = await studentsPostHandler(
       req("/api/admin/students", {
         method: "POST",

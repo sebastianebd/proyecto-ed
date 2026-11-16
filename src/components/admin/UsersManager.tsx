@@ -2,22 +2,11 @@
 
 import { Edit3, KeyRound, ShieldAlert, UserPlus, UserX } from "lucide-react";
 import { useEffect, useState } from "react";
+import type { AdminUserListItem } from "@/lib/admin-users";
 import { formatRutForInput } from "@/lib/rut";
 import { adminCreateUserSchema, adminUpdateUserSchema } from "@/lib/validators";
 
-export type AdminUserItem = {
-  id: string;
-  rut: string;
-  fullName: string;
-  email: string;
-  phone: string | null;
-  role: "SUPER_ADMIN" | "TEACHER" | "PARENT";
-  status: "PENDING_ONBOARDING" | "ACTIVE" | "INACTIVE";
-  lastSeenAt: string | Date | null;
-  isOnline: boolean;
-  classes: { id: string; name: string }[];
-  childrenCount: number;
-};
+export type AdminUserItem = AdminUserListItem;
 
 const ROLE_TEXT = {
   SUPER_ADMIN: "Super Admin",
@@ -31,10 +20,10 @@ const STATUS_BADGE = {
   INACTIVE: { label: "Inactivo", cls: "bg-locked-bg text-locked" },
 };
 
-function formatLastSeen(lastSeen: string | Date | null, isOnline: boolean): string {
+function formatLastSeen(lastSeen: string | null, isOnline: boolean, nowMs: number): string {
   if (isOnline) return "🟢 En línea";
   if (!lastSeen) return "Sin ingreso registrado";
-  const diffSec = Math.max(0, Math.floor((Date.now() - new Date(lastSeen).getTime()) / 1000));
+  const diffSec = Math.max(0, Math.floor((nowMs - new Date(lastSeen).getTime()) / 1000));
   if (diffSec < 3600) return `Última vez hace ${Math.max(2, Math.floor(diffSec / 60))} min`;
   if (diffSec < 86400) return `Última vez hace ${Math.floor(diffSec / 3600)} h`;
   return `Última vez hace ${Math.floor(diffSec / 86400)} d`;
@@ -42,12 +31,15 @@ function formatLastSeen(lastSeen: string | Date | null, isOnline: boolean): stri
 
 export function UsersManager({
   initialUsers,
+  initialNowMs,
   currentUserId,
 }: {
   initialUsers: AdminUserItem[];
+  initialNowMs: number;
   currentUserId: string;
 }) {
   const [items, setItems] = useState<AdminUserItem[]>(initialUsers);
+  const [nowMs, setNowMs] = useState(initialNowMs);
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("");
   const [editing, setEditing] = useState<AdminUserItem | null>(null);
@@ -64,16 +56,20 @@ export function UsersManager({
 
   async function reload() {
     const res = await fetch("/api/admin/users");
-    if (res.ok) {
-      const data = (await res.json()) as { items: AdminUserItem[] };
-      setItems(data.items);
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(body.error ?? "No se pudo actualizar la lista de usuarios");
     }
+    const data = (await res.json()) as { items: AdminUserItem[]; serverNowMs?: number };
+    setItems(data.items);
+    setNowMs(data.serverNowMs ?? Date.now());
   }
 
-  // Refresco en vivo cada ~15s (solo si pestaña visible) para indicador "En línea".
+  // Sincroniza reloj tras hidratar y refresca cada ~15s (solo si pestaña visible).
   useEffect(() => {
+    setNowMs(Date.now());
     const t = setInterval(() => {
-      if (document.visibilityState === "visible") void reload();
+      if (document.visibilityState === "visible") void reload().catch(() => {});
     }, 15_000);
     return () => clearInterval(t);
   }, []);
@@ -168,12 +164,18 @@ export function UsersManager({
   async function revokeUserSessions(u: AdminUserItem) {
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       const res = await fetch(`/api/admin/users/${u.id}/revoke-sessions`, { method: "POST" });
-      if (res.ok) {
-        await reload();
-        setNotice(`Sesiones de ${u.fullName} revocadas`);
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        setError(body.error ?? "No se pudieron revocar las sesiones");
+        return;
       }
+      await reload();
+      setNotice(`Sesiones de ${u.fullName} revocadas`);
+    } catch {
+      setError("Error de conexión al revocar sesiones");
     } finally {
       setBusy(false);
     }
@@ -182,6 +184,7 @@ export function UsersManager({
   async function toggleActive(u: AdminUserItem) {
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       const nextStatus = u.status === "INACTIVE" ? "ACTIVE" : "INACTIVE";
       const res = await fetch(`/api/admin/users/${u.id}`, {
@@ -189,13 +192,15 @@ export function UsersManager({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: nextStatus }),
       });
-      const body = (await res.json()) as { error?: string };
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) {
         setError(body.error ?? "No se pudo cambiar estado");
         return;
       }
       await reload();
       setNotice(nextStatus === "INACTIVE" ? `${u.fullName} desactivado y sesiones cerradas` : `${u.fullName} reactivado`);
+    } catch {
+      setError("Error de conexión al actualizar estado");
     } finally {
       setBusy(false);
     }
@@ -306,7 +311,9 @@ export function UsersManager({
           {editing && email.trim().toLowerCase() !== editing.email && (
             <p className="flex items-center gap-1.5 rounded-xl bg-tint px-3 py-2 text-xs font-medium text-tint-text">
               <ShieldAlert className="h-4 w-4 shrink-0" />
-              Al guardar un correo nuevo se revocarán sus sesiones activas y OTPs pendientes.
+              {editing.id === currentUserId
+                ? "Si cambias tu propio correo, tu sesión se cerrará al guardar y deberás ingresar de nuevo."
+                : "Al guardar un correo nuevo se revocarán sus sesiones activas y OTPs pendientes."}
             </p>
           )}
 
@@ -385,7 +392,7 @@ export function UsersManager({
 
               <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-fg-muted">
                 <span className={u.isOnline ? "font-semibold text-success" : ""}>
-                  {formatLastSeen(u.lastSeenAt, u.isOnline)}
+                  {formatLastSeen(u.lastSeenAt, u.isOnline, nowMs)}
                 </span>
                 {u.role === "PARENT" && <span>Hijos vinculados: {u.childrenCount}</span>}
                 {u.classes.length > 0 && <span>Clases: {u.classes.map((c) => c.name).join(", ")}</span>}
