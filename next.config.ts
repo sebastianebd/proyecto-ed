@@ -11,6 +11,7 @@ const baseSecurityHeaders = [
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  serverExternalPackages: ["unpdf"],
   async headers() {
     // HSTS solo en producción para no forzar HTTPS al probar la PWA en red local por HTTP.
     const headers =

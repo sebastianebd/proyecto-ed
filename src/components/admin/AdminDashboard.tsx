@@ -138,15 +138,18 @@ export function AdminDashboard({
           </div>
         </Link>
 
-        <div className="flex min-h-16 items-start gap-3 rounded-2xl border border-dashed border-border bg-locked-bg/60 p-4 opacity-80">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-surface text-locked">
+        <Link
+          href="/admin/unidades"
+          className="flex min-h-16 items-start gap-3 rounded-2xl border border-border bg-surface p-4 transition-colors hover:border-primary/50"
+        >
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-tint text-primary">
             <FileText className="h-5 w-5" />
           </span>
           <div>
             <p className="font-bold text-fg">Unidades PDF e IA</p>
-            <p className="text-xs text-fg-muted">Disponible en Hito 3</p>
+            <p className="text-xs text-fg-muted">Subir PDF, generar 14 lecciones y calendario</p>
           </div>
-        </div>
+        </Link>
       </section>
     </div>
   );

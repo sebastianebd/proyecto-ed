@@ -64,3 +64,46 @@ export function formatSantiagoDateTime(input: string | Date): string {
   const hour = parts.hour === "24" ? "00" : parts.hour;
   return `${parts.day}-${parts.month}-${parts.year} ${hour}:${parts.minute}`;
 }
+
+/** Suma o resta días calendario sobre YYYY-MM-DD (sin desfases de cambio de hora DST). */
+export function addCalendarDays(ymd: string, days: number): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+}
+
+/** Día de la semana (0 = domingo .. 6 = sábado) para una fecha YYYY-MM-DD. */
+export function dayOfWeek(ymd: string): number {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+}
+
+export const isSundayYmd = (ymd: string) => dayOfWeek(ymd) === 0;
+
+/**
+ * Calcula `unlock_at` (lunes siguiente 00:01:00 America/Santiago en UTC) a partir de `class_sunday_date`.
+ * Seguro ante transiciones DST CLT/CLST de abril y septiembre.
+ */
+export function computeUnlockAtFromSunday(classSundayYmd: string): Date {
+  const mondayYmd = addCalendarDays(classSundayYmd, 1);
+  return santiagoLocalToUtc(mondayYmd, 0, 1, 0, 0);
+}
+
+/** Domingo de la semana en curso en America/Santiago (ej. lunes 09:00 -> ayer domingo; domingo 23:30 -> hoy). */
+export function currentWeekSundayInSantiago(now: Date = new Date()): string {
+  const today = todayInSantiago(now);
+  return addCalendarDays(today, -dayOfWeek(today));
+}
+
+/**
+ * Inicio del lunes actual (`00:00:00.000` America/Santiago -> UTC).
+ * Domingo 23:59 Chile sigue perteneciendo a la semana iniciada el lunes anterior; lunes 00:01 abre semana nueva.
+ */
+export function currentMondayStartUtc(now: Date = new Date()): Date {
+  const today = todayInSantiago(now);
+  const daysSinceMonday = (dayOfWeek(today) + 6) % 7;
+  return santiagoDayStartUtc(addCalendarDays(today, -daysSinceMonday));
+}
+
+export function isMondayInSantiago(now: Date = new Date()): boolean {
+  return dayOfWeek(todayInSantiago(now)) === 1;
+}
