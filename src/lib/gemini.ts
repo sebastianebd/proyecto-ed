@@ -48,6 +48,8 @@ const RESPONSE_SCHEMA = {
   required: ["title", "biblePassage", "parentSummary", "reinforcementQuestions"],
 };
 
+export class GeminiConfigError extends Error {}
+
 const HTML_TAG_RE = /<[^>]+>/;
 
 function stripRawMarkdown(s: string): string {
@@ -55,7 +57,9 @@ function stripRawMarkdown(s: string): string {
     .replace(/```[\s\S]*?```/g, (m) => m.replace(/```/g, ""))
     .replace(/\*\*(.*?)\*\*/g, "$1")
     .replace(/__(.*?)__/g, "$1")
-    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/(?<!\*)\*(?!\*)([^*\n]+)\*(?!\*)/g, "$1")
+    .replace(/^\s*[-*•]\s+/gm, "")
+    .replace(/^\s*#{1,6}\s+/gm, "")
     .trim();
 }
 
@@ -123,7 +127,7 @@ export type GeminiCaller = (params: {
 
 const defaultCaller: GeminiCaller = async ({ model, systemInstruction, userPrompt }) => {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error("GEMINI_API_KEY no está configurada");
+  if (!apiKey) throw new GeminiConfigError("GEMINI_API_KEY no está configurada");
   const ai = new GoogleGenAI({ apiKey });
   const response = await ai.models.generateContent({
     model,
@@ -138,7 +142,7 @@ const defaultCaller: GeminiCaller = async ({ model, systemInstruction, userPromp
   return response.text ?? "";
 };
 
-function isRateLimitError(err: unknown): boolean {
+export function isRateLimitError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const e = err as { status?: number; code?: number; message?: string };
   if (e.status === 429 || e.code === 429) return true;

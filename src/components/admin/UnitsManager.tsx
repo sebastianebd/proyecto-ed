@@ -11,7 +11,7 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { MAX_PDF_BYTES } from "@/lib/storage-constants";
 import { formatSantiagoDate, isSundayYmd } from "@/lib/timezone";
 import { adminUpdateLessonSchema, unitTitleSchema } from "@/lib/validators";
@@ -89,6 +89,7 @@ export function UnitsManager({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  const createPdfInputRef = useRef<HTMLInputElement | null>(null);
   const selectedUnit = unitsList.find((u) => u.id === selectedUnitId) ?? null;
 
   async function reloadUnits(focusUnitId?: string) {
@@ -133,41 +134,52 @@ export function UnitsManager({
       throw new Error(urlBody.error ?? "No se pudo preparar la subida del PDF");
     }
 
-    // Subida directa del navegador a Supabase Storage (respeta límite 4.5 MB de Vercel)
-    const form = new FormData();
-    form.append("cacheControl", "3600");
-    form.append("", selectedFile);
-    const putRes = await fetch(urlBody.signedUrl, {
-      method: "PUT",
-      headers: { "x-upsert": "false" },
-      body: form,
-    });
-    if (!putRes.ok) {
-      throw new Error("Storage rechazó la subida directa del PDF (verifica tamaño <= 25 MB y MIME PDF)");
-    }
-
-    const procRes = await fetch(`/api/admin/units/${urlBody.unitId}/process-pdf`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ storageKey: urlBody.storageKey }),
-    });
-    const procBody = (await procRes.json().catch(() => ({}))) as {
-      scannedWarning?: boolean;
-      totalPages?: number;
-      drafts?: { lessonId: string; rawText: string }[];
-      error?: string;
+    const cleanupNewDraftIfNeeded = async () => {
+      if (!params.unitId) {
+        await fetch(`/api/admin/units/${urlBody.unitId}`, { method: "DELETE" }).catch(() => {});
+      }
     };
-    if (!procRes.ok || !procBody.drafts) {
-      throw new Error(procBody.error ?? "No se pudo procesar el PDF");
-    }
 
-    const map: Record<string, string> = {};
-    for (const d of procBody.drafts) map[d.lessonId] = d.rawText;
-    setDraftTexts((prev) => ({ ...prev, ...map }));
-    setScannedWarning(Boolean(procBody.scannedWarning));
-    setFailedLessonIds([]);
-    await reloadUnits(urlBody.unitId);
-    return { unitId: urlBody.unitId, scannedWarning: Boolean(procBody.scannedWarning) };
+    try {
+      // Subida directa del navegador a Supabase Storage (respeta límite 4.5 MB de Vercel)
+      const form = new FormData();
+      form.append("cacheControl", "3600");
+      form.append("", selectedFile);
+      const putRes = await fetch(urlBody.signedUrl, {
+        method: "PUT",
+        headers: { "x-upsert": "false" },
+        body: form,
+      });
+      if (!putRes.ok) {
+        throw new Error("Storage rechazó la subida directa del PDF (verifica tamaño <= 25 MB y MIME PDF)");
+      }
+
+      const procRes = await fetch(`/api/admin/units/${urlBody.unitId}/process-pdf`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ storageKey: urlBody.storageKey }),
+      });
+      const procBody = (await procRes.json().catch(() => ({}))) as {
+        scannedWarning?: boolean;
+        totalPages?: number;
+        drafts?: { lessonId: string; rawText: string }[];
+        error?: string;
+      };
+      if (!procRes.ok || !procBody.drafts) {
+        throw new Error(procBody.error ?? "No se pudo procesar el PDF");
+      }
+
+      const map: Record<string, string> = {};
+      for (const d of procBody.drafts) map[d.lessonId] = d.rawText;
+      setDraftTexts((prev) => ({ ...prev, ...map }));
+      setScannedWarning(Boolean(procBody.scannedWarning));
+      setFailedLessonIds([]);
+      await reloadUnits(urlBody.unitId);
+      return { unitId: urlBody.unitId, scannedWarning: Boolean(procBody.scannedWarning) };
+    } catch (err) {
+      await cleanupNewDraftIfNeeded();
+      throw err;
+    }
   }
 
   async function handleCreateUnit(e: React.FormEvent) {
@@ -189,6 +201,7 @@ export function UnitsManager({
       const res = await uploadAndProcess({ selectedFile: file });
       setTitle("");
       setFile(null);
+      if (createPdfInputRef.current) createPdfInputRef.current.value = "";
       setNotice(
         res.scannedWarning
           ? "Unidad creada, pero el PDF parece escaneado: pega el texto de cada lección o edítalas manualmente."
@@ -253,6 +266,9 @@ export function UnitsManager({
       } else {
         setNotice(`Generación IA completada (${targets.length}/${targets.length} lecciones).`);
       }
+    } catch (err) {
+      setFailedLessonIds(failures);
+      setError(err instanceof Error ? err.message : "Error de conexión al generar lecciones con IA");
     } finally {
       setAiProgress(null);
       setBusy(false);
@@ -311,6 +327,8 @@ export function UnitsManager({
       }
       await reloadUnits(selectedUnit.id);
       setNotice("Se asignaron los 14 domingos consecutivos (desbloqueo lunes 00:01 Chile).");
+    } catch {
+      setError("Error de conexión al asignar los domingos");
     } finally {
       setBusy(false);
     }
@@ -332,8 +350,11 @@ export function UnitsManager({
         setError(body.error ?? "No se pudo cambiar el estado de la unidad");
         return;
       }
+      if (nextStatus === "FINISHED") setEditingLessonId(null);
       await reloadUnits(selectedUnit.id);
       setNotice(nextStatus === "ACTIVE" ? "Unidad publicada y activa para padres/profesores." : "Unidad finalizada y movida al historial.");
+    } catch {
+      setError("Error de conexión al cambiar el estado de la unidad");
     } finally {
       setBusy(false);
     }
@@ -354,6 +375,8 @@ export function UnitsManager({
       setSelectedUnitId("");
       await reloadUnits();
       setNotice("Borrador eliminado junto con su PDF en Storage.");
+    } catch {
+      setError("Error de conexión al eliminar el borrador");
     } finally {
       setBusy(false);
     }
@@ -382,6 +405,8 @@ export function UnitsManager({
           ? `Calendario corrido +7 días desde Lección ${body.fromLessonNumber} (${body.shiftedCount} lecciones).`
           : `Calendario revertido -7 días desde Lección ${body.fromLessonNumber} (${body.shiftedCount} lecciones).`,
       );
+    } catch {
+      setError("Error de conexión al reprogramar el calendario");
     } finally {
       setBusy(false);
     }
@@ -441,6 +466,8 @@ export function UnitsManager({
       setEditingLessonId(null);
       if (selectedUnit) await reloadUnits(selectedUnit.id);
       setNotice("Lección guardada.");
+    } catch {
+      setError("Error de conexión al guardar la lección");
     } finally {
       setBusy(false);
     }
@@ -448,13 +475,17 @@ export function UnitsManager({
 
   async function handleDownloadPdf(unitId: string) {
     setError(null);
-    const res = await fetch(`/api/teacher/units/${unitId}/pdf`);
-    const body = (await res.json().catch(() => ({}))) as { url?: string; error?: string };
-    if (!res.ok || !body.url) {
-      setError(body.error ?? "No se pudo obtener enlace de descarga");
-      return;
+    try {
+      const res = await fetch(`/api/teacher/units/${unitId}/pdf`);
+      const body = (await res.json().catch(() => ({}))) as { url?: string; error?: string };
+      if (!res.ok || !body.url) {
+        setError(body.error ?? "No se pudo obtener enlace de descarga");
+        return;
+      }
+      window.location.assign(body.url);
+    } catch {
+      setError("Error de conexión al solicitar descarga del PDF");
     }
-    window.location.assign(body.url);
   }
 
   return (
@@ -517,11 +548,13 @@ export function UnitsManager({
               Archivo PDF (máx. 25 MB)
             </label>
             <input
+              ref={createPdfInputRef}
               id="unit-pdf"
               type="file"
               accept="application/pdf,.pdf"
+              disabled={busy}
               onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-              className="block w-full text-sm text-fg-muted file:mr-3 file:min-h-11 file:rounded-xl file:border-0 file:bg-tint file:px-4 file:font-semibold file:text-tint-text"
+              className="block w-full text-sm text-fg-muted file:mr-3 file:min-h-11 file:rounded-xl file:border-0 file:bg-tint file:px-4 file:font-semibold file:text-tint-text disabled:opacity-60"
             />
           </div>
 
@@ -591,15 +624,21 @@ export function UnitsManager({
               <div className="flex flex-wrap gap-2">
                 {selectedUnit.status === "DRAFT" && (
                   <>
-                    <label className="flex min-h-11 cursor-pointer items-center gap-1.5 rounded-xl border border-border px-3 text-xs font-semibold text-fg hover:bg-bg">
+                    <label
+                      className={`flex min-h-11 items-center gap-1.5 rounded-xl border border-border px-3 text-xs font-semibold text-fg ${
+                        busy ? "cursor-not-allowed opacity-60" : "cursor-pointer hover:bg-bg"
+                      }`}
+                    >
                       <FileUp className="h-4 w-4 text-primary" />
                       Reemplazar PDF
                       <input
                         type="file"
                         accept="application/pdf,.pdf"
+                        disabled={busy}
                         className="hidden"
                         onChange={(e) => {
                           const f = e.target.files?.[0];
+                          e.currentTarget.value = "";
                           if (f) void handleReplaceDraftPdf(f);
                         }}
                       />
@@ -705,32 +744,35 @@ export function UnitsManager({
                 </div>
               )}
 
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void runAiBatch(selectedUnit.lessons)}
-                  className="flex min-h-11 items-center gap-2 rounded-xl bg-primary px-4 text-xs font-semibold text-white hover:bg-primary-hover disabled:opacity-60"
-                >
-                  <Sparkles className="h-4 w-4" /> Generar 14 lecciones con IA (secuencial)
-                </button>
-                {failedLessonIds.length > 0 && (
+              {selectedUnit.status !== "FINISHED" && (
+                <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() =>
-                      void runAiBatch(selectedUnit.lessons.filter((l) => failedLessonIds.includes(l.id)))
-                    }
-                    className="flex min-h-11 items-center gap-2 rounded-xl border border-danger/40 bg-danger-bg px-4 text-xs font-semibold text-danger"
+                    onClick={() => void runAiBatch(selectedUnit.lessons)}
+                    className="flex min-h-11 items-center gap-2 rounded-xl bg-primary px-4 text-xs font-semibold text-white hover:bg-primary-hover disabled:opacity-60"
                   >
-                    Reintentar fallidas ({failedLessonIds.length})
+                    <Sparkles className="h-4 w-4" /> Generar 14 lecciones con IA (secuencial)
                   </button>
-                )}
-              </div>
+                  {failedLessonIds.length > 0 && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() =>
+                        void runAiBatch(selectedUnit.lessons.filter((l) => failedLessonIds.includes(l.id)))
+                      }
+                      className="flex min-h-11 items-center gap-2 rounded-xl border border-danger/40 bg-danger-bg px-4 text-xs font-semibold text-danger"
+                    >
+                      Reintentar fallidas ({failedLessonIds.length})
+                    </button>
+                  )}
+                </div>
+              )}
 
               <div className="space-y-3">
                 {selectedUnit.lessons.map((l) => {
-                  const isEditing = editingLessonId === l.id;
+                  const isFinished = selectedUnit.status === "FINISHED";
+                  const isEditing = !isFinished && editingLessonId === l.id;
                   const ready =
                     Boolean(l.title && l.biblePassage && l.parentSummary?.length && l.reinforcementQuestions?.length && l.classSundayDate);
                   return (
@@ -755,105 +797,109 @@ export function UnitsManager({
                         </span>
                       </div>
 
-                      <details className="mt-2">
-                        <summary className="cursor-pointer font-semibold text-primary">
-                          Texto extraído editable (para generación IA)
-                        </summary>
-                        <textarea
-                          rows={4}
-                          placeholder="Pega o ajusta aquí el texto de esta lección antes de generar con IA..."
-                          value={draftTexts[l.id] ?? ""}
-                          onChange={(e) => setDraftTexts((prev) => ({ ...prev, [l.id]: e.target.value }))}
-                          className="mt-2 w-full rounded-xl border border-border bg-surface p-2.5 text-xs text-fg"
-                        />
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void handleGenerateSingle(l)}
-                          className="mt-1.5 min-h-10 rounded-xl border border-primary bg-tint px-3 font-semibold text-tint-text"
-                        >
-                          Generar solo L{l.lessonNumber} con IA
-                        </button>
-                      </details>
-
-                      {isEditing ? (
-                        <div className="mt-3 space-y-2.5 rounded-xl border border-border bg-surface p-3">
-                          <input
-                            type="text"
-                            maxLength={120}
-                            placeholder="Título de lección"
-                            value={lTitle}
-                            onChange={(e) => setLTitle(e.target.value)}
-                            className="min-h-11 w-full rounded-xl border border-border px-3 text-xs text-fg"
-                          />
-                          <input
-                            type="text"
-                            maxLength={80}
-                            placeholder="Pasaje bíblico (ej. 1 Samuel 17:1-50)"
-                            value={lPassage}
-                            onChange={(e) => setLPassage(e.target.value)}
-                            className="min-h-11 w-full rounded-xl border border-border px-3 text-xs text-fg"
-                          />
-                          <textarea
-                            rows={5}
-                            placeholder="Resumen para padres (separa párrafos con una línea en blanco, sin Markdown)"
-                            value={lSummary}
-                            onChange={(e) => setLSummary(e.target.value)}
-                            className="w-full rounded-xl border border-border p-2.5 text-xs text-fg"
-                          />
-                          <textarea
-                            rows={3}
-                            placeholder="Preguntas de refuerzo (una por línea, 2 a 5 preguntas)"
-                            value={lQuestions}
-                            onChange={(e) => setLQuestions(e.target.value)}
-                            className="w-full rounded-xl border border-border p-2.5 text-xs text-fg"
-                          />
-                          <div className="grid gap-2 sm:grid-cols-2">
-                            <input
-                              type="date"
-                              aria-label="Domingo de clase"
-                              value={lSunday}
-                              onChange={(e) => setLSunday(e.target.value)}
-                              className="min-h-11 rounded-xl border border-border px-3 text-xs tabular-nums text-fg"
+                      {!isFinished && (
+                        <>
+                          <details className="mt-2">
+                            <summary className="cursor-pointer font-semibold text-primary">
+                              Texto extraído editable (para generación IA)
+                            </summary>
+                            <textarea
+                              rows={4}
+                              placeholder="Pega o ajusta aquí el texto de esta lección antes de generar con IA..."
+                              value={draftTexts[l.id] ?? ""}
+                              onChange={(e) => setDraftTexts((prev) => ({ ...prev, [l.id]: e.target.value }))}
+                              className="mt-2 w-full rounded-xl border border-border bg-surface p-2.5 text-xs text-fg"
                             />
-                            <select
-                              aria-label="Estado de programación"
-                              value={lStatus}
-                              onChange={(e) => setLStatus(e.target.value as AdminLessonItem["scheduleStatus"])}
-                              className="min-h-11 rounded-xl border border-border px-3 text-xs text-fg"
-                            >
-                              <option value="SCHEDULED">Programada (lunes 00:01)</option>
-                              <option value="PAUSED">Pausada</option>
-                              <option value="FORCE_UNLOCKED">Desbloqueada manual</option>
-                              <option value="FORCE_LOCKED">Bloqueada manual</option>
-                            </select>
-                          </div>
-                          <div className="flex gap-2">
                             <button
                               type="button"
                               disabled={busy}
-                              onClick={() => void saveLessonEdit(l.id)}
-                              className="min-h-11 flex-1 rounded-xl bg-primary px-3 font-semibold text-white"
+                              onClick={() => void handleGenerateSingle(l)}
+                              className="mt-1.5 min-h-10 rounded-xl border border-primary bg-tint px-3 font-semibold text-tint-text"
                             >
-                              Guardar lección
+                              Generar solo L{l.lessonNumber} con IA
                             </button>
+                          </details>
+
+                          {isEditing ? (
+                            <div className="mt-3 space-y-2.5 rounded-xl border border-border bg-surface p-3">
+                              <input
+                                type="text"
+                                maxLength={120}
+                                placeholder="Título de lección"
+                                value={lTitle}
+                                onChange={(e) => setLTitle(e.target.value)}
+                                className="min-h-11 w-full rounded-xl border border-border px-3 text-xs text-fg"
+                              />
+                              <input
+                                type="text"
+                                maxLength={80}
+                                placeholder="Pasaje bíblico (ej. 1 Samuel 17:1-50)"
+                                value={lPassage}
+                                onChange={(e) => setLPassage(e.target.value)}
+                                className="min-h-11 w-full rounded-xl border border-border px-3 text-xs text-fg"
+                              />
+                              <textarea
+                                rows={5}
+                                placeholder="Resumen para padres (separa párrafos con una línea en blanco, sin Markdown)"
+                                value={lSummary}
+                                onChange={(e) => setLSummary(e.target.value)}
+                                className="w-full rounded-xl border border-border p-2.5 text-xs text-fg"
+                              />
+                              <textarea
+                                rows={3}
+                                placeholder="Preguntas de refuerzo (una por línea, 2 a 5 preguntas)"
+                                value={lQuestions}
+                                onChange={(e) => setLQuestions(e.target.value)}
+                                className="w-full rounded-xl border border-border p-2.5 text-xs text-fg"
+                              />
+                              <div className="grid gap-2 sm:grid-cols-2">
+                                <input
+                                  type="date"
+                                  aria-label="Domingo de clase"
+                                  value={lSunday}
+                                  onChange={(e) => setLSunday(e.target.value)}
+                                  className="min-h-11 rounded-xl border border-border px-3 text-xs tabular-nums text-fg"
+                                />
+                                <select
+                                  aria-label="Estado de programación"
+                                  value={lStatus}
+                                  onChange={(e) => setLStatus(e.target.value as AdminLessonItem["scheduleStatus"])}
+                                  className="min-h-11 rounded-xl border border-border px-3 text-xs text-fg"
+                                >
+                                  <option value="SCHEDULED">Programada (lunes 00:01)</option>
+                                  <option value="PAUSED">Pausada</option>
+                                  <option value="FORCE_UNLOCKED">Desbloqueada manual</option>
+                                  <option value="FORCE_LOCKED">Bloqueada manual</option>
+                                </select>
+                              </div>
+                              <div className="flex gap-2">
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() => void saveLessonEdit(l.id)}
+                                  className="min-h-11 flex-1 rounded-xl bg-primary px-3 font-semibold text-white"
+                                >
+                                  Guardar lección
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingLessonId(null)}
+                                  className="min-h-11 rounded-xl border border-border px-3 font-semibold text-fg"
+                                >
+                                  Cancelar
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
                             <button
                               type="button"
-                              onClick={() => setEditingLessonId(null)}
-                              className="min-h-11 rounded-xl border border-border px-3 font-semibold text-fg"
+                              onClick={() => startLessonEdit(l)}
+                              className="mt-2 min-h-10 rounded-xl border border-border bg-surface px-3 font-semibold text-fg hover:bg-locked-bg"
                             >
-                              Cancelar
+                              Editar contenido / fecha / bloqueo
                             </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => startLessonEdit(l)}
-                          className="mt-2 min-h-10 rounded-xl border border-border bg-surface px-3 font-semibold text-fg hover:bg-locked-bg"
-                        >
-                          Editar contenido / fecha / bloqueo
-                        </button>
+                          )}
+                        </>
                       )}
                     </article>
                   );

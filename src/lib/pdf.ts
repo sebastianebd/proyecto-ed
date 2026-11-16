@@ -72,20 +72,36 @@ export function splitUnitPdfTextInto14Drafts(rawPdfText: string, totalPages = 0)
   // Filtrar ocurrencias que parecen líneas de tabla de contenido / índice:
   // 1) terminan en líderes de puntos o número de página (... 14)
   // 2) la distancia hasta el siguiente encabezado es mínima (< 180 chars)
-  const realByLesson = new Map<number, MatchHit>();
+  const candidatesByLesson = new Map<number, (MatchHit & { span: number })[]>();
   for (let i = 0; i < hits.length; i++) {
     const h = hits[i];
     const next = hits[i + 1];
-    const spanToNext = (next ? next.index : text.length) - (h.index + h.lineLength);
-    const looksLikeToc = TOC_PAGE_TAIL_RE.test(h.titleHint) || spanToNext < 180;
+    const span = (next ? next.index : text.length) - (h.index + h.lineLength);
+    const looksLikeToc = TOC_PAGE_TAIL_RE.test(h.titleHint) || span < 180;
     if (looksLikeToc) continue;
 
-    // Si hay múltiples candidatos no-TOC para el mismo número, preferimos el primero sustancial
-    // o el de mayor contenido siguiente si el primero fuera apenas una mención corta.
-    const prev = realByLesson.get(h.lessonNumber);
-    if (!prev) {
-      realByLesson.set(h.lessonNumber, h);
-    }
+    const list = candidatesByLesson.get(h.lessonNumber) ?? [];
+    list.push({ ...h, span });
+    candidatesByLesson.set(h.lessonNumber, list);
+  }
+
+  // Elegir primero el inicio real de Lección 1 (candidato con mayor bloque de contenido).
+  // Cualquier ocurrencia de Lección N > 1 anterior a Lección 1 real pertenece a índice/prólogo.
+  const l1Candidates = candidatesByLesson.get(1) ?? [];
+  const bestL1 = l1Candidates.reduce<(MatchHit & { span: number }) | null>(
+    (best, c) => (!best || c.span > best.span ? c : best),
+    null,
+  );
+  const bodyStartFloor = bestL1 ? bestL1.index : 0;
+
+  const realByLesson = new Map<number, MatchHit>();
+  if (bestL1) realByLesson.set(1, bestL1);
+  for (const [n, list] of candidatesByLesson.entries()) {
+    if (n === 1) continue;
+    const afterStart = list.filter((c) => c.index >= bodyStartFloor);
+    const pool = afterStart.length > 0 ? afterStart : list;
+    const best = pool.reduce((b, c) => (c.span > b.span ? c : b), pool[0]);
+    realByLesson.set(n, best);
   }
 
   // Si logramos detectar al menos 4 encabezados reales de lección, cortamos cronológicamente desde allí

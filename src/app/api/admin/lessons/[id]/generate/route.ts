@@ -1,10 +1,10 @@
 import { eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { lessons } from "@/db/schema";
+import { lessons, units } from "@/db/schema";
 import { recordAuditLog } from "@/lib/audit";
 import { requireAuth } from "@/lib/auth";
-import { generateLessonWithGemini } from "@/lib/gemini";
+import { GeminiConfigError, generateLessonWithGemini, isRateLimitError } from "@/lib/gemini";
 import { jsonError, parseBody, withErrorHandling } from "@/lib/http";
 import { adminGenerateLessonSchema, uuidV4Schema } from "@/lib/validators";
 
@@ -20,8 +20,17 @@ export const POST = withErrorHandling(async (req: NextRequest, ctx: RouteCtx) =>
   const parsed = await parseBody(req, adminGenerateLessonSchema);
   if (!parsed.ok) return parsed.response;
 
-  const [existing] = await db.select().from(lessons).where(eq(lessons.id, id)).limit(1);
-  if (!existing) return jsonError(404, "Lección no encontrada");
+  const [row] = await db
+    .select({ lesson: lessons, unitStatus: units.status })
+    .from(lessons)
+    .innerJoin(units, eq(lessons.unitId, units.id))
+    .where(eq(lessons.id, id))
+    .limit(1);
+  if (!row) return jsonError(404, "Lección no encontrada");
+  if (row.unitStatus === "FINISHED") {
+    return jsonError(409, "No se puede regenerar contenido de una unidad finalizada");
+  }
+  const existing = row.lesson;
 
   let generated;
   try {
@@ -31,10 +40,13 @@ export const POST = withErrorHandling(async (req: NextRequest, ctx: RouteCtx) =>
       hintTitle: parsed.data.hintTitle ?? existing.title ?? undefined,
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "Error de generación IA";
-    if (/\b429\b|RESOURCE_EXHAUSTED|quota|rate limit/i.test(msg)) {
+    if (err instanceof GeminiConfigError) {
+      return jsonError(500, "Servicio de IA no configurado en el servidor");
+    }
+    if (isRateLimitError(err)) {
       return jsonError(429, "Límite temporal de Gemini alcanzado. Reintenta en unos segundos.");
     }
+    const msg = err instanceof Error ? err.message : "Error de generación IA";
     console.error("[gemini] error generando lección", id, msg);
     return jsonError(422, msg);
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { generateLessonWithGemini, parseAndValidateGeminiResponse } from "@/lib/gemini";
+import { GeminiConfigError, generateLessonWithGemini, isRateLimitError, parseAndValidateGeminiResponse } from "@/lib/gemini";
 import { extractAndSplitUnitPdf, hasPdfMagicBytes, splitUnitPdfTextInto14Drafts } from "@/lib/pdf";
 import { computeUnlockAtFromSunday, currentMondayStartUtc, currentWeekSundayInSantiago } from "@/lib/timezone";
 
@@ -57,6 +57,26 @@ describe("Hito 3 — Motor PDF (magic bytes, índice vs cuerpo, PDF escaneado)",
     expect(result.drafts[13].title).toBe("Héroe de la Fe Número 14");
   });
 
+  it("salta índice sin puntos seguido de prólogo (>= 180 chars) y elige las 14 lecciones reales", () => {
+    const tocWithoutDots = [
+      "CONTENIDO GENERAL DE LA UNIDAD",
+      ...Array.from({ length: 14 }, (_, i) => `Lección ${i + 1}: Resumen corto ${i + 1} pág ${i + 4}`),
+    ].join("\n");
+    const longPrologue = "Introducción pastoral para los maestros y padres sobre el propósito de este trimestre de enseñanza bíblica infantil en nuestra congregación local. ".repeat(3);
+
+    const body = Array.from({ length: 14 }, (_, i) => {
+      const n = i + 1;
+      return `Lección ${n}: Caminando con Dios ${n}\n` +
+        `Desarrollo pedagógico real del encuentro número ${n} con aplicación práctica para niños y familias. `.repeat(5);
+    }).join("\n\n");
+
+    const result = splitUnitPdfTextInto14Drafts(`${tocWithoutDots}\n\n${longPrologue}\n\n${body}`, 84);
+    expect(result.scannedWarning).toBe(false);
+    expect(result.drafts[0].title).toBe("Caminando con Dios 1");
+    expect(result.drafts[0].rawText).toContain("Desarrollo pedagógico real del encuentro número 1");
+    expect(result.drafts[13].title).toBe("Caminando con Dios 14");
+  });
+
   it("retorna { scannedWarning: true, drafts: 14 } sin excepción en PDF escaneado o vacío", () => {
     for (const emptyText of ["", "   \n\n  \t  \n"]) {
       const res = splitUnitPdfTextInto14Drafts(emptyText, 12);
@@ -101,17 +121,41 @@ describe("Hito 3 — Gemini parser, saneo anti-XSS y backoff HTTP 429", () => {
     expect(() => parseAndValidateGeminiResponse("{ json roto")).toThrow(/JSON/i);
   });
 
-  it("sanea Markdown crudo accidental (**) y valida Zod antes de persistir", () => {
+  it("sanea Markdown crudo accidental (**, *italic*, ##, viñetas - /* /•) y valida Zod antes de persistir", () => {
     const withMd = JSON.stringify({
       ...validPayload,
       parentSummary: [
-        "**Dios** nos da valentía en cada momento y nunca nos abandona en las pruebas.",
-        "## Recordemos que confiar en el Señor fortalece nuestro corazón cada día.",
+        "**Dios** nos da *valentía* en cada momento y nunca nos abandona en las pruebas.",
+        "- ## Recordemos que confiar en el Señor fortalece nuestro corazón cada día.",
+      ],
+      reinforcementQuestions: [
+        "• ¿Qué *enseñanza* de **David** recordaremos en casa esta semana?",
+        "- ¿Cómo podemos orar juntos cada noche antes de dormir?",
       ],
     });
     const parsed = parseAndValidateGeminiResponse(withMd);
     expect(parsed.parentSummary.join(" ")).not.toContain("**");
+    expect(parsed.parentSummary.join(" ")).not.toContain("*");
     expect(parsed.parentSummary.join(" ")).not.toContain("##");
+    expect(parsed.parentSummary[1]).not.toMatch(/^- /);
+    expect(parsed.reinforcementQuestions[0]).not.toMatch(/^[•*]|\*/);
+    expect(parsed.reinforcementQuestions[1]).not.toMatch(/^- /);
+  });
+
+  it("lanza GeminiConfigError sin GEMINI_API_KEY e identifica errores 429 con isRateLimitError", async () => {
+    const prev = process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    try {
+      await expect(
+        generateLessonWithGemini({ lessonNumber: 1, rawText: "Texto largo de ejemplo de la lección bíblica." }),
+      ).rejects.toBeInstanceOf(GeminiConfigError);
+    } finally {
+      if (prev !== undefined) process.env.GEMINI_API_KEY = prev;
+    }
+
+    expect(isRateLimitError({ status: 429, message: "Too Many Requests" })).toBe(true);
+    expect(isRateLimitError(new Error("RESOURCE_EXHAUSTED quota exceeded"))).toBe(true);
+    expect(isRateLimitError(new Error("Invalid JSON output"))).toBe(false);
   });
 
   it("ejecuta backoff exponencial ante HTTP 429 y se recupera sin perder la lección", async () => {

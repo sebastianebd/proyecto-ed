@@ -1,5 +1,5 @@
 import { asc, eq } from "drizzle-orm";
-import { db } from "@/db";
+import { db, type DbOrTx } from "@/db";
 import { lessons, units } from "@/db/schema";
 import { recordAuditLog } from "@/lib/audit";
 import { getPgErrorInfo } from "@/lib/http";
@@ -27,13 +27,17 @@ export class DomainHttpError extends Error {
 }
 
 /** Asigna los 14 domingos consecutivos (`startSunday + 7*i`) y su `unlock_at` lunes 00:01 Chile. */
-export async function assignConsecutiveSundays(unitId: string, startSundayYmd: string) {
-  return db.transaction(async (tx) => {
+export async function assignConsecutiveSundays(unitId: string, startSundayYmd: string, existingTx?: DbOrTx) {
+  const run = async (tx: DbOrTx) => {
     const unitLessons = await tx
       .select()
       .from(lessons)
       .where(eq(lessons.unitId, unitId))
       .orderBy(asc(lessons.lessonNumber));
+
+    if (unitLessons.length === 0) {
+      throw new DomainHttpError(400, "Debes subir y procesar el PDF antes de asignar las fechas");
+    }
 
     for (const l of unitLessons) {
       const sunday = addCalendarDays(startSundayYmd, (l.lessonNumber - 1) * 7);
@@ -44,70 +48,74 @@ export async function assignConsecutiveSundays(unitId: string, startSundayYmd: s
     }
 
     return tx.select().from(lessons).where(eq(lessons.unitId, unitId)).orderBy(asc(lessons.lessonNumber));
-  });
+  };
+
+  return existingTx ? run(existingTx) : db.transaction(run);
 }
 
 /** Publica una unidad `DRAFT` -> `ACTIVE` validando PDF, 14 lecciones completas y unicidad ACTIVE. */
-export async function activateUnit(unitId: string, actor: { id: string; role: string }) {
+export async function activateUnit(unitId: string, actor: { id: string; role: string }, existingTx?: DbOrTx) {
+  const run = async (tx: DbOrTx) => {
+    const [unit] = await tx.select().from(units).where(eq(units.id, unitId)).limit(1).for("update");
+    if (!unit) throw new DomainHttpError(404, "Unidad no encontrada");
+    if (unit.status !== "DRAFT") throw new DomainHttpError(409, "Solo se pueden publicar unidades en borrador");
+    if (!unit.pdfStorageKey) {
+      throw new DomainHttpError(400, "Debes subir y validar el PDF de la unidad antes de activarla");
+    }
+
+    const activeRows = await tx.select({ id: units.id, status: units.status }).from(units).where(eq(units.classId, unit.classId));
+    if (activeRows.some((r) => r.status === "ACTIVE" && r.id !== unitId)) {
+      throw new DomainHttpError(409, "Esta clase ya tiene una unidad activa. Finalízala antes de activar otra.");
+    }
+
+    const unitLessons = await tx
+      .select()
+      .from(lessons)
+      .where(eq(lessons.unitId, unitId))
+      .orderBy(asc(lessons.lessonNumber));
+    if (unitLessons.length !== 14) {
+      throw new DomainHttpError(400, `La unidad debe tener exactamente 14 lecciones (tiene ${unitLessons.length})`);
+    }
+
+    for (const l of unitLessons) {
+      if (
+        !lessonTitleSchema.safeParse(l.title).success ||
+        !biblePassageSchema.safeParse(l.biblePassage).success ||
+        !parentSummarySchema.safeParse(l.parentSummary).success ||
+        !reinforcementQuestionsSchema.safeParse(l.reinforcementQuestions).success ||
+        !l.classSundayDate ||
+        !sundayIsoDateSchema.safeParse(l.classSundayDate).success ||
+        !l.unlockAt
+      ) {
+        throw new DomainHttpError(400, `La lección ${l.lessonNumber} está incompleta o tiene fechas inválidas`);
+      }
+    }
+
+    // Evita envíos retroactivos: marca push_sent=true en lecciones cuyo lunes ya quedó atrás.
+    const mondayStart = currentMondayStartUtc();
+    for (const l of unitLessons) {
+      if (l.unlockAt && l.unlockAt < mondayStart && !l.pushSent) {
+        await tx.update(lessons).set({ pushSent: true }).where(eq(lessons.id, l.id));
+      }
+    }
+
+    const [activated] = await tx.update(units).set({ status: "ACTIVE" }).where(eq(units.id, unitId)).returning();
+    await recordAuditLog(
+      {
+        actorUserId: actor.id,
+        actorRole: actor.role,
+        action: "UNIT_ACTIVATE",
+        entityType: "unit",
+        entityId: unitId,
+        details: { classId: unit.classId, title: unit.title },
+      },
+      tx,
+    );
+    return activated;
+  };
+
   try {
-    return await db.transaction(async (tx) => {
-      const [unit] = await tx.select().from(units).where(eq(units.id, unitId)).limit(1).for("update");
-      if (!unit) throw new DomainHttpError(404, "Unidad no encontrada");
-      if (unit.status !== "DRAFT") throw new DomainHttpError(409, "Solo se pueden publicar unidades en borrador");
-      if (!unit.pdfStorageKey) {
-        throw new DomainHttpError(400, "Debes subir y validar el PDF de la unidad antes de activarla");
-      }
-
-      const activeRows = await tx.select({ id: units.id, status: units.status }).from(units).where(eq(units.classId, unit.classId));
-      if (activeRows.some((r) => r.status === "ACTIVE" && r.id !== unitId)) {
-        throw new DomainHttpError(409, "Esta clase ya tiene una unidad activa. Finalízala antes de activar otra.");
-      }
-
-      const unitLessons = await tx
-        .select()
-        .from(lessons)
-        .where(eq(lessons.unitId, unitId))
-        .orderBy(asc(lessons.lessonNumber));
-      if (unitLessons.length !== 14) {
-        throw new DomainHttpError(400, `La unidad debe tener exactamente 14 lecciones (tiene ${unitLessons.length})`);
-      }
-
-      for (const l of unitLessons) {
-        if (
-          !lessonTitleSchema.safeParse(l.title).success ||
-          !biblePassageSchema.safeParse(l.biblePassage).success ||
-          !parentSummarySchema.safeParse(l.parentSummary).success ||
-          !reinforcementQuestionsSchema.safeParse(l.reinforcementQuestions).success ||
-          !l.classSundayDate ||
-          !sundayIsoDateSchema.safeParse(l.classSundayDate).success ||
-          !l.unlockAt
-        ) {
-          throw new DomainHttpError(400, `La lección ${l.lessonNumber} está incompleta o tiene fechas inválidas`);
-        }
-      }
-
-      // Evita envíos retroactivos: marca push_sent=true en lecciones cuyo lunes ya quedó atrás.
-      const mondayStart = currentMondayStartUtc();
-      for (const l of unitLessons) {
-        if (l.unlockAt && l.unlockAt < mondayStart && !l.pushSent) {
-          await tx.update(lessons).set({ pushSent: true }).where(eq(lessons.id, l.id));
-        }
-      }
-
-      const [activated] = await tx.update(units).set({ status: "ACTIVE" }).where(eq(units.id, unitId)).returning();
-      await recordAuditLog(
-        {
-          actorUserId: actor.id,
-          actorRole: actor.role,
-          action: "UNIT_ACTIVATE",
-          entityType: "unit",
-          entityId: unitId,
-          details: { classId: unit.classId, title: unit.title },
-        },
-        tx,
-      );
-      return activated;
-    });
+    return existingTx ? await run(existingTx) : await db.transaction(run);
   } catch (err) {
     if (err instanceof DomainHttpError) throw err;
     if (getPgErrorInfo(err).code === "23505") {
@@ -172,6 +180,10 @@ export async function shiftUnitSchedule(params: {
       const firstShifted = toShift[0];
       const newFirstSunday = addCalendarDays(firstShifted.classSundayDate!, -7);
 
+      if (newFirstSunday < currentWeekSunday) {
+        throw new DomainHttpError(409, "No se puede revertir una lección hacia una semana pasada cerrada");
+      }
+
       if (firstShifted.lessonNumber > 1) {
         const prevLesson = allLessons.find((l) => l.lessonNumber === firstShifted.lessonNumber - 1);
         if (prevLesson?.classSundayDate && newFirstSunday <= prevLesson.classSundayDate) {
@@ -180,8 +192,6 @@ export async function shiftUnitSchedule(params: {
             `No se puede revertir: la lección ${firstShifted.lessonNumber} chocaría con la lección ${prevLesson.lessonNumber}`,
           );
         }
-      } else if (newFirstSunday < currentWeekSunday) {
-        throw new DomainHttpError(409, "No se puede revertir la lección 1 a una semana pasada cerrada");
       }
     }
 

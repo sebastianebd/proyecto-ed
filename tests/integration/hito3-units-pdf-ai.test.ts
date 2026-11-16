@@ -6,7 +6,7 @@ import { POST as generateLessonHandler } from "@/app/api/admin/lessons/[id]/gene
 import { PATCH as patchLessonHandler } from "@/app/api/admin/lessons/[id]/route";
 import { POST as postponeHandler } from "@/app/api/admin/units/[id]/postpone/route";
 import { POST as processPdfHandler } from "@/app/api/admin/units/[id]/process-pdf/route";
-import { DELETE as deleteUnitHandler, PATCH as patchUnitHandler } from "@/app/api/admin/units/[id]/route";
+import { DELETE as deleteUnitHandler, GET as getUnitHandler, PATCH as patchUnitHandler } from "@/app/api/admin/units/[id]/route";
 import { POST as unpostponeHandler } from "@/app/api/admin/units/[id]/unpostpone/route";
 import { GET as listUnitsHandler } from "@/app/api/admin/units/route";
 import { POST as uploadUrlHandler } from "@/app/api/admin/units/upload-url/route";
@@ -434,5 +434,185 @@ describe("Hito 3 — Reprogramación +7/-7 días (Lunes AM + 409) y Descarga Pro
 
     const dlLogs = await db.select().from(auditLogs).where(eq(auditLogs.action, "PDF_DOWNLOAD"));
     expect(dlLogs).toHaveLength(1);
+
+    // FINISHED sigue disponible para TEACHER asignado y SUPER_ADMIN
+    const { cookie: adminCookie } = await createUserSession({ rut: "21333444-6", email: "adm@a.cl", role: "SUPER_ADMIN" });
+    await db.update(units).set({ status: "FINISHED" }).where(eq(units.id, activeUnit.id));
+
+    expect((await teacherPdfHandler(req(`/api/teacher/units/${activeUnit.id}/pdf`, { cookie: t1Cookie }), { params: Promise.resolve({ id: activeUnit.id }) })).status).toBe(200);
+    expect((await teacherPdfHandler(req(`/api/teacher/units/${activeUnit.id}/pdf`, { cookie: adminCookie }), { params: Promise.resolve({ id: activeUnit.id }) })).status).toBe(200);
+  });
+
+  it("RBAC 403 para TEACHER y PARENT en endpoints admin de unidades/lecciones", async () => {
+    const { cookie: parentCookie } = await createUserSession({ rut: "15222333-4", email: "rbac-p@p.cl", role: "PARENT" });
+    const { cookie: teacherCookie } = await createUserSession({ rut: "16222333-1", email: "rbac-t@t.cl", role: "TEACHER" });
+    const fakeId = "00000000-0000-4000-8000-000000000001";
+
+    for (const cookie of [teacherCookie, parentCookie]) {
+      expect((await listUnitsHandler(req("/api/admin/units", { cookie }))).status).toBe(403);
+      expect(
+        (await uploadUrlHandler(req("/api/admin/units/upload-url", { method: "POST", cookie, body: {} }))).status,
+      ).toBe(403);
+      expect((await getUnitHandler(req(`/api/admin/units/${fakeId}`, { cookie }), { params: Promise.resolve({ id: fakeId }) })).status).toBe(403);
+      expect(
+        (await patchUnitHandler(req(`/api/admin/units/${fakeId}`, { method: "PATCH", cookie, body: { title: "X" } }), {
+          params: Promise.resolve({ id: fakeId }),
+        })).status,
+      ).toBe(403);
+      expect(
+        (await deleteUnitHandler(req(`/api/admin/units/${fakeId}`, { method: "DELETE", cookie }), { params: Promise.resolve({ id: fakeId }) })).status,
+      ).toBe(403);
+      expect(
+        (await processPdfHandler(req(`/api/admin/units/${fakeId}/process-pdf`, { method: "POST", cookie, body: { storageKey: "a/b.pdf" } }), {
+          params: Promise.resolve({ id: fakeId }),
+        })).status,
+      ).toBe(403);
+      expect(
+        (await postponeHandler(req(`/api/admin/units/${fakeId}/postpone`, { method: "POST", cookie, body: {} }), {
+          params: Promise.resolve({ id: fakeId }),
+        })).status,
+      ).toBe(403);
+      expect(
+        (await unpostponeHandler(req(`/api/admin/units/${fakeId}/unpostpone`, { method: "POST", cookie, body: {} }), {
+          params: Promise.resolve({ id: fakeId }),
+        })).status,
+      ).toBe(403);
+      expect(
+        (await patchLessonHandler(req(`/api/admin/lessons/${fakeId}`, { method: "PATCH", cookie, body: { title: "X" } }), {
+          params: Promise.resolve({ id: fakeId }),
+        })).status,
+      ).toBe(403);
+      expect(
+        (await generateLessonHandler(
+          req(`/api/admin/lessons/${fakeId}/generate`, { method: "POST", cookie, body: { rawText: "x".repeat(40) } }),
+          { params: Promise.resolve({ id: fakeId }) },
+        )).status,
+      ).toBe(403);
+    }
+  });
+
+  it("H3-01/H3-02/H3-05: PDF corrupto limpia key, atomicidad PATCH unit, 0 lecciones (400), bloqueo FINISHED y DST/unpostpone", async () => {
+    const { cookie: adminCookie } = await createUserSession({ rut: "17333444-5", email: "adm2@a.cl", role: "SUPER_ADMIN" });
+    const [cls] = await db.insert(classes).values({ name: "Primarios" }).returning();
+
+    // 1. Upload URL sin procesar PDF todavía (0 lecciones)
+    const up = await uploadUrlHandler(
+      req("/api/admin/units/upload-url", {
+        method: "POST",
+        cookie: adminCookie,
+        body: { classId: cls.id, orderNumber: 1, title: "Original", fileName: "u.pdf" },
+      }),
+    );
+    const { unitId, storageKey: keyValid } = (await up.json()) as { unitId: string; storageKey: string };
+
+    // 2. startSundayDate con 0 lecciones -> 400
+    const emptyDatesRes = await patchUnitHandler(
+      req(`/api/admin/units/${unitId}`, { method: "PATCH", cookie: adminCookie, body: { startSundayDate: "2026-04-05" } }),
+      { params: Promise.resolve({ id: unitId }) },
+    );
+    expect(emptyDatesRes.status).toBe(400);
+
+    // 3. Atomicidad PATCH { title: "No debe quedar", status: "ACTIVE" } cuando falla activación -> rollback de title
+    const atomicFail = await patchUnitHandler(
+      req(`/api/admin/units/${unitId}`, { method: "PATCH", cookie: adminCookie, body: { title: "No debe quedar", status: "ACTIVE" } }),
+      { params: Promise.resolve({ id: unitId }) },
+    );
+    expect(atomicFail.status).toBe(400);
+    expect((await db.select().from(units).where(eq(units.id, unitId)))[0].title).toBe("Original");
+
+    // 4. Procesar PDF válido
+    fakeBucket.set(keyValid, Buffer.from("%PDF-1.7\nok"));
+    expect(
+      (
+        await processPdfHandler(
+          req(`/api/admin/units/${unitId}/process-pdf`, { method: "POST", cookie: adminCookie, body: { storageKey: keyValid } }),
+          { params: Promise.resolve({ id: unitId }) },
+        )
+      ).status,
+    ).toBe(200);
+
+    // 5. H3-01: %PDF- corrupto donde unpdf lanza excepción -> 400 + borra keyCorrupt conservando keyValid
+    const upCorrupt = await uploadUrlHandler(
+      req("/api/admin/units/upload-url", { method: "POST", cookie: adminCookie, body: { unitId, fileName: "corrupt.pdf" } }),
+    );
+    const { storageKey: keyCorrupt } = (await upCorrupt.json()) as { storageKey: string };
+    fakeBucket.set(keyCorrupt, Buffer.from("%PDF-1.7\ncorrupto"));
+    vi.spyOn(pdfModule, "extractAndSplitUnitPdf").mockRejectedValueOnce(new Error("Invalid PDF structure"));
+
+    const corruptRes = await processPdfHandler(
+      req(`/api/admin/units/${unitId}/process-pdf`, { method: "POST", cookie: adminCookie, body: { storageKey: keyCorrupt } }),
+      { params: Promise.resolve({ id: unitId }) },
+    );
+    expect(corruptRes.status).toBe(400);
+    expect(fakeBucket.has(keyCorrupt)).toBe(false);
+    expect(fakeBucket.has(keyValid)).toBe(true);
+
+    // 6. Poblar IA, asignar domingo 2026-03-29 (cruza cambio de hora abril 2026-04-05) y probar postpone/unpostpone desde L2 + DST septiembre
+    const lessonRows = await db.select().from(lessons).where(eq(lessons.unitId, unitId)).orderBy(asc(lessons.lessonNumber));
+    for (const l of lessonRows) {
+      await generateLessonHandler(
+        req(`/api/admin/lessons/${l.id}/generate`, {
+          method: "POST",
+          cookie: adminCookie,
+          body: { rawText: `Contenido largo de lección ${l.lessonNumber} para probar DST y calendario.` },
+        }),
+        { params: Promise.resolve({ id: l.id }) },
+      );
+    }
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-04-06T13:00:00Z")); // Lunes 2026-04-06 Chile (domingo en curso = 2026-04-05)
+
+    // Fijamos inicio el 2026-03-29 (L1=2026-03-29, L2=2026-04-05 DST abril)
+    await patchUnitHandler(
+      req(`/api/admin/units/${unitId}`, { method: "PATCH", cookie: adminCookie, body: { startSundayDate: "2026-03-29", status: "ACTIVE" } }),
+      { params: Promise.resolve({ id: unitId }) },
+    );
+    const afterApr = await db.select().from(lessons).where(eq(lessons.unitId, unitId)).orderBy(asc(lessons.lessonNumber));
+    expect(afterApr[0].unlockAt?.toISOString()).toBe("2026-03-30T03:01:00.000Z"); // Verano UTC-3
+    expect(afterApr[1].unlockAt?.toISOString()).toBe("2026-04-06T04:01:00.000Z"); // Invierno UTC-4 tras cambio abril
+
+    // Mover L2..14 al domingo 2026-09-06 -> unpostpone desde L2 cuando ya es 2026-09-14 -> 409 si baja del domingo_semana_en_curso
+    await db
+      .update(lessons)
+      .set({ classSundayDate: "2026-09-06", unlockAt: new Date("2026-09-07T03:01:00.000Z") })
+      .where(eq(lessons.id, afterApr[1].id));
+    vi.setSystemTime(new Date("2026-09-07T13:00:00Z")); // Lunes 2026-09-07 (domingo en curso = 2026-09-06)
+    const blockedL2 = await unpostponeHandler(
+      req(`/api/admin/units/${unitId}/unpostpone`, { method: "POST", cookie: adminCookie, body: { fromLessonNumber: 2 } }),
+      { params: Promise.resolve({ id: unitId }) },
+    );
+    expect(blockedL2.status).toBe(409);
+
+    // 7. H3-05: Finalizar unidad bloquea edición y generación IA de sus lecciones (409)
+    expect(
+      (
+        await patchUnitHandler(
+          req(`/api/admin/units/${unitId}`, { method: "PATCH", cookie: adminCookie, body: { status: "FINISHED" } }),
+          { params: Promise.resolve({ id: unitId }) },
+        )
+      ).status,
+    ).toBe(200);
+
+    expect(
+      (
+        await patchLessonHandler(
+          req(`/api/admin/lessons/${afterApr[0].id}`, { method: "PATCH", cookie: adminCookie, body: { title: "Intento editar" } }),
+          { params: Promise.resolve({ id: afterApr[0].id }) },
+        )
+      ).status,
+    ).toBe(409);
+    expect(
+      (
+        await generateLessonHandler(
+          req(`/api/admin/lessons/${afterApr[0].id}/generate`, {
+            method: "POST",
+            cookie: adminCookie,
+            body: { rawText: "Texto largo para intentar regenerar en unidad finalizada." },
+          }),
+          { params: Promise.resolve({ id: afterApr[0].id }) },
+        )
+      ).status,
+    ).toBe(409);
   });
 });

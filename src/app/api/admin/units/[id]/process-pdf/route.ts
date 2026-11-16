@@ -52,7 +52,13 @@ export const POST = withErrorHandling(async (req: NextRequest, ctx: RouteCtx) =>
   }
 
   // 3. Extraer texto con `unpdf` y dividir en 14 borradores editables.
-  const extracted = await extractAndSplitUnitPdf(buffer);
+  let extracted: Awaited<ReturnType<typeof extractAndSplitUnitPdf>>;
+  try {
+    extracted = await extractAndSplitUnitPdf(buffer);
+  } catch {
+    await storage.removeObject(storageKey);
+    return jsonError(400, "No se pudo leer el PDF (puede estar dañado o protegido con contraseña)");
+  }
   const previousStorageKey = unit.pdfStorageKey;
 
   const savedLessons = await db.transaction(async (tx) => {

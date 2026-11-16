@@ -4,7 +4,7 @@ import { db } from "@/db";
 import { lessons, units } from "@/db/schema";
 import { recordAuditLog } from "@/lib/audit";
 import { requireAuth } from "@/lib/auth";
-import { jsonError, parseBody, withErrorHandling } from "@/lib/http";
+import { jsonError, parseBody, withErrorHandling, getPgErrorInfo } from "@/lib/http";
 import { storage } from "@/lib/storage";
 import { activateUnit, assignConsecutiveSundays, DomainHttpError } from "@/lib/unit-schedule";
 import { adminUpdateUnitSchema, uuidV4Schema } from "@/lib/validators";
@@ -44,26 +44,28 @@ export const PATCH = withErrorHandling(async (req: NextRequest, ctx: RouteCtx) =
   }
 
   try {
-    if (title !== undefined || orderNumber !== undefined) {
-      const patchValues: Partial<typeof units.$inferInsert> = {};
-      if (title !== undefined) patchValues.title = title;
-      if (orderNumber !== undefined) patchValues.orderNumber = orderNumber;
-      await db.update(units).set(patchValues).where(eq(units.id, id));
-    }
-
-    if (startSundayDate !== undefined) {
-      if (existing.status === "FINISHED") return jsonError(409, "No se puede cambiar el calendario de una unidad finalizada");
-      await assignConsecutiveSundays(id, startSundayDate);
-    }
-
-    let item = (await db.select().from(units).where(eq(units.id, id)).limit(1))[0];
-    if (status === "ACTIVE" && existing.status !== "ACTIVE") {
-      item = await activateUnit(id, auth.user);
-    } else if (status === "FINISHED" && existing.status !== "FINISHED") {
-      if (existing.status !== "ACTIVE") {
-        return jsonError(400, "Solo se puede finalizar una unidad activa");
+    const result = await db.transaction(async (tx) => {
+      if (title !== undefined || orderNumber !== undefined) {
+        const patchValues: Partial<typeof units.$inferInsert> = {};
+        if (title !== undefined) patchValues.title = title;
+        if (orderNumber !== undefined) patchValues.orderNumber = orderNumber;
+        await tx.update(units).set(patchValues).where(eq(units.id, id));
       }
-      item = await db.transaction(async (tx) => {
+
+      if (startSundayDate !== undefined) {
+        if (existing.status === "FINISHED") {
+          throw new DomainHttpError(409, "No se puede cambiar el calendario de una unidad finalizada");
+        }
+        await assignConsecutiveSundays(id, startSundayDate, tx);
+      }
+
+      let item = (await tx.select().from(units).where(eq(units.id, id)).limit(1))[0];
+      if (status === "ACTIVE" && existing.status !== "ACTIVE") {
+        item = await activateUnit(id, auth.user, tx);
+      } else if (status === "FINISHED" && existing.status !== "FINISHED") {
+        if (existing.status !== "ACTIVE") {
+          throw new DomainHttpError(400, "Solo se puede finalizar una unidad activa");
+        }
         const [u] = await tx.update(units).set({ status: "FINISHED" }).where(eq(units.id, id)).returning();
         await recordAuditLog(
           {
@@ -76,16 +78,21 @@ export const PATCH = withErrorHandling(async (req: NextRequest, ctx: RouteCtx) =
           },
           tx,
         );
-        return u;
-      });
-    } else if (status === "DRAFT" && existing.status !== "DRAFT") {
-      return jsonError(409, "No se puede devolver una unidad publicada a borrador");
-    }
+        item = u;
+      } else if (status === "DRAFT" && existing.status !== "DRAFT") {
+        throw new DomainHttpError(409, "No se puede devolver una unidad publicada a borrador");
+      }
 
-    const unitLessons = await db.select().from(lessons).where(eq(lessons.unitId, id)).orderBy(asc(lessons.lessonNumber));
-    return NextResponse.json({ item: { ...item, lessons: unitLessons } });
+      const unitLessons = await tx.select().from(lessons).where(eq(lessons.unitId, id)).orderBy(asc(lessons.lessonNumber));
+      return { ...item, lessons: unitLessons };
+    });
+
+    return NextResponse.json({ item: result });
   } catch (err) {
     if (err instanceof DomainHttpError) return jsonError(err.status, err.message);
+    if (getPgErrorInfo(err).code === "23505") {
+      return jsonError(409, "Ya existe una unidad con ese orden o estado activo en esta clase");
+    }
     throw err;
   }
 });

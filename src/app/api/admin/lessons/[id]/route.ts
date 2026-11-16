@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { lessons } from "@/db/schema";
+import { lessons, units } from "@/db/schema";
 import { recordAuditLog } from "@/lib/audit";
 import { requireAuth } from "@/lib/auth";
 import { jsonError, parseBody, withErrorHandling } from "@/lib/http";
@@ -20,8 +20,16 @@ export const PATCH = withErrorHandling(async (req: NextRequest, ctx: RouteCtx) =
   const parsed = await parseBody(req, adminUpdateLessonSchema);
   if (!parsed.ok) return parsed.response;
 
-  const [existing] = await db.select().from(lessons).where(eq(lessons.id, id)).limit(1);
+  const [existing] = await db
+    .select({ lesson: lessons, unitStatus: units.status })
+    .from(lessons)
+    .innerJoin(units, eq(lessons.unitId, units.id))
+    .where(eq(lessons.id, id))
+    .limit(1);
   if (!existing) return jsonError(404, "Lección no encontrada");
+  if (existing.unitStatus === "FINISHED") {
+    return jsonError(409, "No se pueden modificar lecciones de una unidad finalizada");
+  }
 
   const patchValues: Partial<typeof lessons.$inferInsert> = {};
   if (parsed.data.title !== undefined) patchValues.title = parsed.data.title;
@@ -41,7 +49,7 @@ export const PATCH = withErrorHandling(async (req: NextRequest, ctx: RouteCtx) =
   }
 
   const statusChanged =
-    parsed.data.scheduleStatus !== undefined && parsed.data.scheduleStatus !== existing.scheduleStatus;
+    parsed.data.scheduleStatus !== undefined && parsed.data.scheduleStatus !== existing.lesson.scheduleStatus;
   const contentEdited =
     parsed.data.title !== undefined ||
     parsed.data.biblePassage !== undefined ||
@@ -60,7 +68,7 @@ export const PATCH = withErrorHandling(async (req: NextRequest, ctx: RouteCtx) =
           action: "LESSON_STATUS_CHANGE",
           entityType: "lesson",
           entityId: id,
-          details: { before: existing.scheduleStatus, after: row.scheduleStatus },
+          details: { before: existing.lesson.scheduleStatus, after: row.scheduleStatus },
         },
         tx,
       );
