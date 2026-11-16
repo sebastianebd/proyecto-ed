@@ -45,17 +45,66 @@ export const GET = withErrorHandling(async (req: NextRequest) => {
 
   const now = new Date();
 
-  const recordedRows = await db
-    .select({
-      attendanceDate: attendanceRecords.attendanceDate,
-      presentCount: sql<number>`COALESCE(SUM(CASE WHEN ${attendanceRecords.isPresent} THEN 1 ELSE 0 END), 0)::int`,
-      totalCount: sql<number>`COUNT(*)::int`,
-      firstCreatedAt: sql<Date>`MIN(${attendanceRecords.createdAt})`,
-    })
-    .from(attendanceRecords)
-    .where(eq(attendanceRecords.classId, classId))
-    .groupBy(attendanceRecords.attendanceDate)
-    .orderBy(desc(attendanceRecords.attendanceDate));
+  const [recordedRows, currentStudentsRows, historyStudentsRows, recordedStudentRows] = await Promise.all([
+    db
+      .select({
+        attendanceDate: attendanceRecords.attendanceDate,
+        presentCount: sql<number>`COALESCE(SUM(CASE WHEN ${attendanceRecords.isPresent} THEN 1 ELSE 0 END), 0)::int`,
+        totalCount: sql<number>`COUNT(*)::int`,
+        firstCreatedAt: sql<Date>`MIN(${attendanceRecords.createdAt})`,
+      })
+      .from(attendanceRecords)
+      .where(eq(attendanceRecords.classId, classId))
+      .groupBy(attendanceRecords.attendanceDate)
+      .orderBy(desc(attendanceRecords.attendanceDate)),
+    db
+      .select({
+        id: students.id,
+        fullName: students.fullName,
+        status: students.status,
+        classId: students.classId,
+      })
+      .from(students)
+      .where(eq(students.classId, classId)),
+    db
+      .selectDistinct({
+        id: students.id,
+        fullName: students.fullName,
+        status: students.status,
+        classId: students.classId,
+      })
+      .from(studentClassHistory)
+      .innerJoin(students, eq(studentClassHistory.studentId, students.id))
+      .where(eq(studentClassHistory.classId, classId)),
+    db
+      .selectDistinct({
+        id: students.id,
+        fullName: students.fullName,
+        status: students.status,
+        classId: students.classId,
+      })
+      .from(attendanceRecords)
+      .innerJoin(students, eq(attendanceRecords.studentId, students.id))
+      .where(eq(attendanceRecords.classId, classId)),
+  ]);
+
+  const historyStudentMap = new Map<
+    string,
+    { id: string; fullName: string; status: string; transferredOut: boolean }
+  >();
+  for (const s of [...currentStudentsRows, ...historyStudentsRows, ...recordedStudentRows]) {
+    if (!historyStudentMap.has(s.id)) {
+      historyStudentMap.set(s.id, {
+        id: s.id,
+        fullName: s.fullName,
+        status: s.status,
+        transferredOut: s.classId !== classId,
+      });
+    }
+  }
+  const historyStudents = Array.from(historyStudentMap.values()).sort((a, b) =>
+    a.fullName.localeCompare(b.fullName, "es"),
+  );
 
   const recordedDates = recordedRows.map((r) => {
     const firstCreatedAt = r.firstCreatedAt ? new Date(r.firstCreatedAt) : null;
@@ -228,6 +277,7 @@ export const GET = withErrorHandling(async (req: NextRequest) => {
   return NextResponse.json({
     class: { id: access.classRow.id, name: access.classRow.name },
     recordedDates,
+    historyStudents,
     selectedDate,
     studentHistory,
   });

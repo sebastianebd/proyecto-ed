@@ -454,7 +454,9 @@ describe("Hito 5 — Módulo Profesor, IDOR Horizontal y Asistencia MIN(created_
       .limit(1);
     expect(overrideAudit).toBeTruthy();
 
-    // GET devuelve historial y estado canEdit correcto (false para TEACHER en fecha vencida, true en fecha nueva)
+    // GET devuelve historial completo (incluyendo trasladados/inactivos en historyStudents) y estado canEdit correcto
+    await db.update(students).set({ status: "INACTIVE" }).where(eq(students.id, studentOld.id));
+
     const getExpired = await getTeacherAttendanceHandler(
       req(`/api/teacher/attendance?classId=${classA.id}&date=${sunday14DaysAgo}&studentId=${studentOld.id}`, {
         cookie: teacherACookie,
@@ -462,19 +464,59 @@ describe("Hito 5 — Módulo Profesor, IDOR Horizontal y Asistencia MIN(created_
     );
     expect(getExpired.status).toBe(200);
     const expiredJson = (await getExpired.json()) as {
+      historyStudents: { id: string; status: string; transferredOut: boolean }[];
       selectedDate: { canEdit: boolean; records: { studentId: string; isPresent: boolean | null }[] };
-      studentHistory: { records: { attendanceDate: string; isPresent: boolean }[] };
+      studentHistory: { studentId: string; records: { attendanceDate: string; isPresent: boolean }[] };
     };
     expect(expiredJson.selectedDate.canEdit).toBe(false);
     expect(expiredJson.studentHistory.records).toHaveLength(1);
     expect(expiredJson.studentHistory.records[0].isPresent).toBe(false);
+    expect(expiredJson.historyStudents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: studentOld.id, status: "INACTIVE", transferredOut: false }),
+        expect.objectContaining({ id: studentTransfer.id, status: "ACTIVE", transferredOut: true }),
+      ]),
+    );
 
-    // Domingo distinto sin registros sigue editable para el profesor
+    const getTransferredHistory = await getTeacherAttendanceHandler(
+      req(`/api/teacher/attendance?classId=${classA.id}&studentId=${studentTransfer.id}`, {
+        cookie: teacherACookie,
+      }),
+    );
+    expect(getTransferredHistory.status).toBe(200);
+    const transferredHistoryJson = (await getTransferredHistory.json()) as {
+      studentHistory: { studentId: string; records: { attendanceDate: string; isPresent: boolean }[] };
+    };
+    expect(transferredHistoryJson.studentHistory.records[0].isPresent).toBe(true);
+
+    // Domingo distinto sin registros: SUPER_ADMIN guarda dentro de ventana -> override: false y ATTENDANCE_SAVE
     const getOpen = await getTeacherAttendanceHandler(
       req(`/api/teacher/attendance?classId=${classA.id}&date=${sunday7DaysAgo}`, { cookie: teacherACookie }),
     );
     const openJson = (await getOpen.json()) as { selectedDate: { canEdit: boolean } };
     expect(openJson.selectedDate.canEdit).toBe(true);
+
+    const adminInWindow = await putTeacherAttendanceHandler(
+      req("/api/teacher/attendance", {
+        method: "PUT",
+        cookie: adminCookie,
+        body: {
+          classId: classA.id,
+          attendanceDate: sunday7DaysAgo,
+          records: [{ studentId: studentNew.id, isPresent: true }],
+        },
+      }),
+    );
+    expect(adminInWindow.status).toBe(200);
+    const adminInWindowBody = (await adminInWindow.json()) as { override: boolean };
+    expect(adminInWindowBody.override).toBe(false);
+
+    const [saveAudit] = await db
+      .select()
+      .from(auditLogs)
+      .where(and(eq(auditLogs.action, "ATTENDANCE_SAVE"), eq(auditLogs.actorRole, "SUPER_ADMIN")))
+      .limit(1);
+    expect(saveAudit).toBeTruthy();
   });
 
   it("calcula correctamente KPIs de clase y seguimiento Visto/Completado excluyendo padres INACTIVE", async () => {

@@ -39,6 +39,7 @@ export function TeacherStudentsView() {
   }, [loadClasses]);
 
   async function openStudent(studentId: string) {
+    setDetail(null);
     setLoadingDetail(true);
     setError(null);
     try {

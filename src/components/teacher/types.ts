@@ -29,9 +29,17 @@ export type RecordedAttendanceSummary = {
   canEdit: boolean;
 };
 
+export type HistoryStudentOption = {
+  id: string;
+  fullName: string;
+  status: string;
+  transferredOut: boolean;
+};
+
 export type TeacherAttendanceResponse = {
   class: { id: string; name: string };
   recordedDates: RecordedAttendanceSummary[];
+  historyStudents: HistoryStudentOption[];
   selectedDate: {
     attendanceDate: string;
     firstCreatedAt: string | null;

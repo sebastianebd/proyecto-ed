@@ -39,11 +39,29 @@ describe("Hito 5 — Zona horaria America/Santiago, DST y MIN(created_at)", () =
     expect(isAttendanceEditWindowOpen(firstCreatedAt, new Date("2026-05-14T04:00:00.000Z"))).toBe(false);
   });
 
-  it("valida domingos pasados/actuales y rechaza lunes o domingos futuros", () => {
+  it("valida domingos pasados/actuales (incluyendo domingo 23:30 Chile) y rechaza lunes o domingos futuros", () => {
     const now = new Date("2026-05-12T16:00:00Z"); // martes 2026-05-12 en Chile
     expect(validatePastOrTodaySunday("2026-05-10", now)).toEqual({ ok: true });
     expect(validatePastOrTodaySunday("2026-05-11", now).ok).toBe(false);
     expect(validatePastOrTodaySunday("2026-05-17", now).ok).toBe(false);
+
+    // Domingo 23:30 Chile cuando en UTC ya es lunes
+    expect(validatePastOrTodaySunday("2026-05-10", new Date("2026-05-11T03:30:00.000Z"))).toEqual({ ok: true }); // CLT UTC-4
+    expect(validatePastOrTodaySunday("2026-10-11", new Date("2026-10-12T02:30:00.000Z"))).toEqual({ ok: true }); // CLST UTC-3
+  });
+
+  it("respeta los 3 días calendario de MIN(created_at) desde las 23:55 Chile cruzando cambios DST", () => {
+    // Cruce abril (CLST -> CLT): 2026-04-04 23:55 Chile = 2026-04-05T02:55:00Z
+    const aprilCreated = new Date("2026-04-05T02:55:00.000Z");
+    expect(attendanceEditDeadlineYmd(aprilCreated)).toBe("2026-04-07");
+    expect(isAttendanceEditWindowOpen(aprilCreated, new Date("2026-04-08T03:59:59.000Z"))).toBe(true);
+    expect(isAttendanceEditWindowOpen(aprilCreated, new Date("2026-04-08T04:00:00.000Z"))).toBe(false);
+
+    // Cruce septiembre (CLT -> CLST): 2026-09-05 23:55 Chile = 2026-09-06T03:55:00Z
+    const septCreated = new Date("2026-09-06T03:55:00.000Z");
+    expect(attendanceEditDeadlineYmd(septCreated)).toBe("2026-09-08");
+    expect(isAttendanceEditWindowOpen(septCreated, new Date("2026-09-09T02:59:59.000Z"))).toBe(true);
+    expect(isAttendanceEditWindowOpen(septCreated, new Date("2026-09-09T03:00:00.000Z"))).toBe(false);
   });
 
   it("permite asistencia de alumnos vigentes, históricos en esa fecha o ya registrados", () => {

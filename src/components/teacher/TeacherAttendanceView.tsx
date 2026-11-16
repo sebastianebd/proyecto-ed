@@ -1,10 +1,17 @@
 "use client";
 
 import { Calendar, Check, Clock, History, Lock, MessageSquare, Save, ShieldAlert, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Role } from "@/lib/auth";
 import { addCalendarDays, formatSantiagoDate, formatSantiagoDateTime, isSundayYmd } from "@/lib/timezone";
-import type { AttendanceStudentRow, TeacherAttendanceResponse, TeacherClassItem } from "./types";
+import type { AttendanceStudentRow, HistoryStudentOption, TeacherAttendanceResponse, TeacherClassItem } from "./types";
+
+function checkSelectedSunday(dateYmd: string, defaultSundayYmd: string): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateYmd)) return "Selecciona una fecha de domingo válida.";
+  if (!isSundayYmd(dateYmd)) return "La fecha seleccionada debe corresponder estrictamente a un domingo.";
+  if (dateYmd > defaultSundayYmd) return "No se puede registrar asistencia en un domingo futuro.";
+  return null;
+}
 
 type DraftEntry = { isPresent: boolean | null; observation: string; showNote: boolean };
 
@@ -29,6 +36,7 @@ export function TeacherAttendanceView({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const fetchAbortRef = useRef<AbortController | null>(null);
 
   const loadClasses = useCallback(async () => {
     setLoadingClasses(true);
@@ -60,29 +68,44 @@ export function TeacherAttendanceView({
   }, [loadClasses]);
 
   const loadAttendance = useCallback(
-    async (classId: string, dateYmd: string, studentId?: string) => {
+    async (classId: string, dateYmd: string, studentId?: string, includeDate = true) => {
       if (!classId) return;
-      if (!isSundayYmd(dateYmd)) {
-        setError("La fecha seleccionada debe corresponder estrictamente a un domingo.");
-        return;
+      if (includeDate) {
+        const dateError = checkSelectedSunday(dateYmd, defaultSundayYmd);
+        if (dateError) {
+          fetchAbortRef.current?.abort();
+          setDrafts({});
+          setAttendanceData((prev) => (prev ? { ...prev, selectedDate: null } : null));
+          setError(dateError);
+          return;
+        }
       }
-      if (dateYmd > defaultSundayYmd) {
-        setError("No se puede registrar asistencia en un domingo futuro.");
-        return;
-      }
+
+      fetchAbortRef.current?.abort();
+      const controller = new AbortController();
+      fetchAbortRef.current = controller;
 
       setLoadingData(true);
       setError(null);
       try {
-        const params = new URLSearchParams({ classId, date: dateYmd });
+        const params = new URLSearchParams({ classId });
+        if (includeDate) params.set("date", dateYmd);
         if (studentId) params.set("studentId", studentId);
-        const res = await fetch(`/api/teacher/attendance?${params.toString()}`);
+        const res = await fetch(`/api/teacher/attendance?${params.toString()}`, {
+          signal: controller.signal,
+        });
         const body = (await res.json().catch(() => ({}))) as TeacherAttendanceResponse & { error?: string };
+        if (controller.signal.aborted) return;
         if (!res.ok) {
           setError(body.error ?? "No se pudo cargar la asistencia");
           return;
         }
         setAttendanceData(body);
+        if (body.historyStudents?.length) {
+          setSelectedStudentId((prev) =>
+            prev && body.historyStudents.some((s) => s.id === prev) ? prev : body.historyStudents[0].id,
+          );
+        }
         const nextDrafts: Record<string, DraftEntry> = {};
         for (const r of body.selectedDate?.records ?? []) {
           nextDrafts[r.studentId] = {
@@ -92,10 +115,11 @@ export function TeacherAttendanceView({
           };
         }
         setDrafts(nextDrafts);
-      } catch {
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
         setError("Error de conexión al cargar la asistencia");
       } finally {
-        setLoadingData(false);
+        if (!controller.signal.aborted) setLoadingData(false);
       }
     },
     [defaultSundayYmd],
@@ -103,17 +127,26 @@ export function TeacherAttendanceView({
 
   useEffect(() => {
     if (!selectedClassId) return;
+    const includeDate = tab === "take" || checkSelectedSunday(selectedDate, defaultSundayYmd) === null;
     const studentParam = tab === "history" && historyMode === "student" ? selectedStudentId : undefined;
-    void loadAttendance(selectedClassId, selectedDate, studentParam);
-  }, [selectedClassId, selectedDate, tab, historyMode, selectedStudentId, loadAttendance]);
+    void loadAttendance(selectedClassId, selectedDate, studentParam, includeDate);
+    return () => {
+      fetchAbortRef.current?.abort();
+    };
+  }, [selectedClassId, selectedDate, tab, historyMode, selectedStudentId, defaultSundayYmd, loadAttendance]);
 
+  const dateValidationError = checkSelectedSunday(selectedDate, defaultSundayYmd);
+  const isValidSelectedDate = dateValidationError === null;
   const recentSundays = [0, -7, -14, -21].map((offset) => addCalendarDays(defaultSundayYmd, offset));
   const currentClass = classes.find((c) => c.id === selectedClassId) ?? null;
-  const rows: AttendanceStudentRow[] = attendanceData?.selectedDate?.records ?? [];
-  const canEdit = attendanceData?.selectedDate?.canEdit ?? true;
-  const firstCreatedAt = attendanceData?.selectedDate?.firstCreatedAt ?? null;
-  const editDeadlineYmd = attendanceData?.selectedDate?.editDeadlineYmd ?? null;
-  const withinTeacherWindow = attendanceData?.selectedDate?.withinTeacherWindow ?? true;
+  const historyStudents: HistoryStudentOption[] =
+    attendanceData?.historyStudents ??
+    (currentClass?.students.map((s) => ({ ...s, status: "ACTIVE", transferredOut: false })) ?? []);
+  const rows: AttendanceStudentRow[] = isValidSelectedDate ? (attendanceData?.selectedDate?.records ?? []) : [];
+  const canEdit = isValidSelectedDate && (attendanceData?.selectedDate?.canEdit ?? true);
+  const firstCreatedAt = isValidSelectedDate ? (attendanceData?.selectedDate?.firstCreatedAt ?? null) : null;
+  const editDeadlineYmd = isValidSelectedDate ? (attendanceData?.selectedDate?.editDeadlineYmd ?? null) : null;
+  const withinTeacherWindow = isValidSelectedDate && (attendanceData?.selectedDate?.withinTeacherWindow ?? true);
 
   const markedCount = rows.filter((r) => drafts[r.studentId]?.isPresent !== null && drafts[r.studentId]?.isPresent !== undefined).length;
 
@@ -322,6 +355,11 @@ export function TeacherAttendanceView({
       )}
 
       {tab === "take" ? (
+        !isValidSelectedDate ? (
+          <section className="rounded-2xl border border-border bg-surface p-5 text-sm text-fg-muted">
+            {dateValidationError ?? "Selecciona un domingo válido para cargar la lista de asistencia."}
+          </section>
+        ) : (
         <section className="space-y-3 rounded-2xl border border-border bg-surface p-4 sm:p-5">
           {!canEdit && firstCreatedAt && (
             <div className="flex items-start gap-2.5 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs text-fg">
@@ -481,6 +519,7 @@ export function TeacherAttendanceView({
             </button>
           )}
         </section>
+        )
       ) : (
         <section className="space-y-3 rounded-2xl border border-border bg-surface p-4 sm:p-5">
           <div className="flex gap-2">
@@ -548,9 +587,10 @@ export function TeacherAttendanceView({
                 onChange={(e) => setSelectedStudentId(e.target.value)}
                 className="min-h-11 w-full rounded-xl border border-border bg-bg px-3 text-sm font-medium text-fg"
               >
-                {(currentClass?.students ?? []).map((s) => (
+                {historyStudents.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.fullName}
+                    {s.transferredOut ? " (Trasladado)" : s.status !== "ACTIVE" ? " (Inactivo)" : ""}
                   </option>
                 ))}
               </select>
