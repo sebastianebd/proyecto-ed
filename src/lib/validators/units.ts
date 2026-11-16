@@ -80,3 +80,10 @@ export const adminUpdateUnitSchema = z.object({
 export const unitScheduleShiftSchema = z.object({
   fromLessonNumber: z.coerce.number().int().min(1).max(14).optional(),
 });
+
+export const parentCompleteLessonSchema = z.object({
+  studentIds: z
+    .array(uuidV4Schema)
+    .min(1, "Debes seleccionar al menos un alumno")
+    .max(20, "Máximo 20 alumnos por solicitud"),
+});
