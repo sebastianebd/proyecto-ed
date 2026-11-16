@@ -171,14 +171,25 @@ export async function runDailyCron(options: { now?: Date; sendPush?: PushSenderF
   mondayPush.parentsTargeted = uniqueParents.size;
 
   const goneSubIds: string[] = [];
-  for (const sub of uniqueSubs.values()) {
-    const outcome = await sender(sub, PUSH_NEW_LESSON_PAYLOAD);
-    if (outcome === "sent") mondayPush.sent += 1;
-    else if (outcome === "gone") {
-      mondayPush.removedGone += 1;
-      goneSubIds.push(sub.id);
-    } else {
-      mondayPush.failed += 1;
+  const subsList = Array.from(uniqueSubs.values());
+  const BATCH_SIZE = 10;
+
+  for (let i = 0; i < subsList.length; i += BATCH_SIZE) {
+    const chunk = subsList.slice(i, i + BATCH_SIZE);
+    const settled = await Promise.allSettled(chunk.map((sub) => sender(sub, PUSH_NEW_LESSON_PAYLOAD)));
+    for (let j = 0; j < settled.length; j += 1) {
+      const outcome = settled[j];
+      if (outcome.status === "fulfilled") {
+        if (outcome.value === "sent") mondayPush.sent += 1;
+        else if (outcome.value === "gone") {
+          mondayPush.removedGone += 1;
+          goneSubIds.push(chunk[j].id);
+        } else {
+          mondayPush.failed += 1;
+        }
+      } else {
+        mondayPush.failed += 1;
+      }
     }
   }
 

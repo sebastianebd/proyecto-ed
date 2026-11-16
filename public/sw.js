@@ -89,7 +89,7 @@ self.addEventListener("push", (event) => {
     const data = event.data ? event.data.json() : null;
     if (data && typeof data.title === "string" && data.title) title = data.title;
     if (data && typeof data.body === "string" && data.body) body = data.body;
-    if (data && typeof data.url === "string" && data.url.startsWith("/")) url = data.url;
+    if (data && typeof data.url === "string" && data.url.startsWith("/") && !data.url.startsWith("//")) url = data.url;
   } catch {
     // Usar mensaje neutro por defecto (docs/03-seguridad.md §6.4).
   }

@@ -86,11 +86,11 @@ export async function enableBrowserPush(): Promise<
   if (!reg) {
     reg = await navigator.serviceWorker.register("/sw.js");
   }
-  await navigator.serviceWorker.ready;
+  const readyReg = await navigator.serviceWorker.ready;
 
-  let sub = await reg.pushManager.getSubscription();
+  let sub = await readyReg.pushManager.getSubscription();
   if (!sub) {
-    sub = await reg.pushManager.subscribe({
+    sub = await readyReg.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: urlBase64ToUint8Array(meta.publicKey),
     });
@@ -120,25 +120,30 @@ export async function enableBrowserPush(): Promise<
 
 export async function disableBrowserPush(): Promise<{ ok: boolean; error?: string }> {
   const endpoint = await getActiveBrowserPushEndpoint();
+  if (!endpoint) return { ok: true };
+
+  try {
+    const res = await fetch("/api/push/subscribe", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint }),
+    });
+
+    if (!res.ok && res.status !== 404) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      return { ok: false, error: body.error ?? "No se pudo desvincular Push del servidor." };
+    }
+  } catch {
+    return { ok: false, error: "Error de conexión al desvincular notificaciones." };
+  }
+
   try {
     const reg = await navigator.serviceWorker.getRegistration();
     const sub = await reg?.pushManager?.getSubscription();
     if (sub) await sub.unsubscribe().catch(() => {});
   } catch {
-    // Continuar para intentar borrar en servidor si había endpoint.
+    // El servidor ya desvinculó la suscripción.
   }
 
-  if (!endpoint) return { ok: true };
-
-  const res = await fetch("/api/push/subscribe", {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ endpoint }),
-  });
-
-  if (!res.ok && res.status !== 404) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string };
-    return { ok: false, error: body.error ?? "No se pudo desvincular Push del servidor." };
-  }
   return { ok: true };
 }

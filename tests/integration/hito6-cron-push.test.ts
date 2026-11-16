@@ -46,10 +46,11 @@ async function createUserWithSession(opts: {
   fullName: string;
   email: string;
   role: "SUPER_ADMIN" | "TEACHER" | "PARENT";
-  status?: "ACTIVE" | "INACTIVE";
+  status?: "ACTIVE" | "INACTIVE" | "PENDING_ONBOARDING";
   expiresOffsetMs?: number;
   revokedAt?: Date | null;
 }) {
+  const effectiveStatus = opts.status ?? "ACTIVE";
   const [user] = await db
     .insert(users)
     .values({
@@ -57,8 +58,8 @@ async function createUserWithSession(opts: {
       fullName: opts.fullName,
       email: opts.email,
       role: opts.role,
-      status: opts.status ?? "ACTIVE",
-      onboardedAt: new Date(),
+      status: effectiveStatus,
+      onboardedAt: effectiveStatus === "ACTIVE" ? new Date() : null,
     })
     .returning();
   const rawToken = generateSessionToken();
@@ -209,6 +210,19 @@ describe("Hito 6 — Cron Diario y Web Push Agrupado", () => {
       email: "pns@test.cl",
       role: "PARENT",
     });
+    const { user: parentInactive } = await createUserWithSession({
+      rut: "88888888-8",
+      fullName: "Padre Inactivo",
+      email: "pinac@test.cl",
+      role: "PARENT",
+      status: "INACTIVE",
+    });
+    const { user: parentOfInactiveChild } = await createUserWithSession({
+      rut: "99999999-9",
+      fullName: "Padre Hijo Inactivo",
+      email: "phijo@test.cl",
+      role: "PARENT",
+    });
 
     const [class1, class2, class3Paused, class4Draft, class5Finished] = await db
       .insert(classes)
@@ -221,7 +235,7 @@ describe("Hito 6 — Cron Diario y Web Push Agrupado", () => {
       ])
       .returning();
 
-    const [child1, child2, child3, child4, child5] = await db
+    const [child1, child2, child3, child4, child5, childInactive] = await db
       .insert(students)
       .values([
         { classId: class1.id, fullName: "Hijo C1" },
@@ -229,6 +243,7 @@ describe("Hito 6 — Cron Diario y Web Push Agrupado", () => {
         { classId: class3Paused.id, fullName: "Hijo C3" },
         { classId: class4Draft.id, fullName: "Hijo C4" },
         { classId: class5Finished.id, fullName: "Hijo C5" },
+        { classId: class1.id, fullName: "Hijo Inactivo", status: "INACTIVE" },
       ])
       .returning();
 
@@ -237,6 +252,8 @@ describe("Hito 6 — Cron Diario y Web Push Agrupado", () => {
       { parentId: parentMulti.id, studentId: child2.id },
       { parentId: parentGone.id, studentId: child1.id },
       { parentId: parentNoSub.id, studentId: child1.id },
+      { parentId: parentInactive.id, studentId: child1.id },
+      { parentId: parentOfInactiveChild.id, studentId: childInactive.id },
       { parentId: parentOther.id, studentId: child3.id },
       { parentId: parentOther.id, studentId: child4.id },
       { parentId: parentOther.id, studentId: child5.id },
@@ -257,6 +274,20 @@ describe("Hito 6 — Cron Diario y Web Push Agrupado", () => {
           endpoint: "https://fcm.googleapis.com/fcm/send/gone-sub",
           p256dh: "C".repeat(64),
           auth: "D".repeat(22),
+          platform: "android",
+        },
+        {
+          userId: parentInactive.id,
+          endpoint: "https://fcm.googleapis.com/fcm/send/inactive-parent-sub",
+          p256dh: "G".repeat(64),
+          auth: "H".repeat(22),
+          platform: "android",
+        },
+        {
+          userId: parentOfInactiveChild.id,
+          endpoint: "https://fcm.googleapis.com/fcm/send/inactive-child-sub",
+          p256dh: "J".repeat(64),
+          auth: "K".repeat(22),
           platform: "android",
         },
         {
@@ -313,8 +344,11 @@ describe("Hito 6 — Cron Diario y Web Push Agrupado", () => {
     });
 
     // Padre con 2 hijos en 2 clases recibió EXACTAMENTE 1 notificación agrupada neutra (sin nombres de niños)
+    // Padres/hijos INACTIVE y de otras clases no reciben Push
     expect(deliveries.filter((d) => d.userId === parentMulti.id)).toHaveLength(1);
     expect(deliveries.find((d) => d.userId === parentOther.id)).toBeUndefined();
+    expect(deliveries.find((d) => d.userId === parentInactive.id)).toBeUndefined();
+    expect(deliveries.find((d) => d.userId === parentOfInactiveChild.id)).toBeUndefined();
     expect(deliveries[0].body).toBe("Escuela Dominical: Nueva lección disponible para repasar en casa");
 
     // Suscripción 410 Gone eliminada; suscripción válida intacta
@@ -406,5 +440,31 @@ describe("Hito 6 — Cron Diario y Web Push Agrupado", () => {
     );
     expect(logoutRes.status).toBe(200);
     expect(await db.select().from(pushSubscriptions)).toHaveLength(0);
+
+    // Petición sin header Origin a POST /api/push/subscribe -> 403 Forbidden
+    const noOriginRes = await postPushHandler(
+      req("/api/push/subscribe", { method: "POST", cookie: cookieB, body: subPayload, omitOrigin: true }),
+    );
+    expect(noOriginRes.status).toBe(403);
+
+    // Usuario en PENDING_ONBOARDING sí puede registrar Push durante el onboarding
+    const { cookie: onboardingCookie } = await createUserWithSession({
+      rut: "10101010-5",
+      fullName: "Padre En Onboarding",
+      email: "onb-push@test.cl",
+      role: "PARENT",
+      status: "PENDING_ONBOARDING",
+    });
+    const onboardingSubRes = await postPushHandler(
+      req("/api/push/subscribe", {
+        method: "POST",
+        cookie: onboardingCookie,
+        body: {
+          ...subPayload,
+          endpoint: "https://fcm.googleapis.com/fcm/send/onboarding-sub-token",
+        },
+      }),
+    );
+    expect(onboardingSubRes.status).toBe(200);
   });
 });

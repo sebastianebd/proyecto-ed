@@ -55,9 +55,8 @@ export async function sendWebPushNotification(
     return "failed";
   }
 
-  setVapidDetails(subject, publicKey, privateKey);
-
   try {
+    setVapidDetails(subject, publicKey, privateKey);
     await sendNotification(
       {
         endpoint: sub.endpoint,

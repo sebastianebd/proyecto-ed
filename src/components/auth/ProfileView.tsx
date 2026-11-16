@@ -75,6 +75,8 @@ export function ProfileView({ profile }: { profile: UserProfile }) {
       } else {
         setPushNotice(res.error ?? "Error al desactivar notificaciones.");
       }
+    } catch {
+      setPushNotice("No se pudieron desactivar las notificaciones en este dispositivo.");
     } finally {
       setPushBusy(false);
     }
