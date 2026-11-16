@@ -22,31 +22,32 @@ export const POST = withErrorHandling(async (req: NextRequest, ctx: RouteCtx) =>
     return jsonError(403, "Uno o más alumnos seleccionados no corresponden a tus hijos activos en esta clase");
   }
 
-  const now = new Date();
   await db.transaction(async (tx) => {
-    await tx
+    const inserted = await tx
       .insert(lessonCompletions)
       .values(
         uniqueStudentIds.map((studentId) => ({
           lessonId: lesson.id,
           studentId,
           completedByUserId: user.id,
-          completedAt: now,
         })),
       )
-      .onConflictDoNothing({ target: [lessonCompletions.lessonId, lessonCompletions.studentId] });
+      .onConflictDoNothing({ target: [lessonCompletions.lessonId, lessonCompletions.studentId] })
+      .returning({ studentId: lessonCompletions.studentId });
 
-    await recordAuditLog(
-      {
-        actorUserId: user.id,
-        actorRole: user.role,
-        action: "LESSON_COMPLETE",
-        entityType: "lesson",
-        entityId: lesson.id,
-        details: { unitId: unit.id, lessonNumber: lesson.lessonNumber, studentIds: uniqueStudentIds },
-      },
-      tx,
-    );
+    if (inserted.length > 0) {
+      await recordAuditLog(
+        {
+          actorUserId: user.id,
+          actorRole: user.role,
+          action: "LESSON_COMPLETE",
+          entityType: "lesson",
+          entityId: lesson.id,
+          details: { unitId: unit.id, lessonNumber: lesson.lessonNumber, studentIds: inserted.map((r) => r.studentId) },
+        },
+        tx,
+      );
+    }
   });
 
   const childrenState = await loadLessonCompletionState(lesson.id, eligibleChildren);

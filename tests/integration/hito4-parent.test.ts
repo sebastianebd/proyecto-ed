@@ -195,8 +195,38 @@ describe("Hito 4 — Matriz RBAC Padres, Historial y Acordeón", () => {
       ])
       .returning();
 
-    // TEACHER no puede usar endpoints /api/parent/*
-    expect((await getParentUnitsHandler(req("/api/parent/units", { cookie: teacherCookie }))).status).toBe(403);
+    // TEACHER, SUPER_ADMIN y PARENT en PENDING_ONBOARDING no pueden usar endpoints /api/parent/*
+    const { cookie: adminCookie } = await createUserSession({
+      rut: "21333444-6",
+      fullName: "Admin Sol",
+      email: "admin@test.cl",
+      role: "SUPER_ADMIN",
+    });
+    const { cookie: pendingParentCookie } = await createUserSession({
+      rut: "16444555-3",
+      fullName: "Padre Pendiente",
+      email: "pendiente@test.cl",
+      role: "PARENT",
+      status: "PENDING_ONBOARDING",
+    });
+    for (const deniedCookie of [teacherCookie, adminCookie, pendingParentCookie]) {
+      expect((await getParentUnitsHandler(req("/api/parent/units", { cookie: deniedCookie }))).status).toBe(403);
+      expect(
+        (await getParentLessonHandler(req(`/api/parent/lessons/${lUnlocked.id}`, { cookie: deniedCookie }), { params: Promise.resolve({ id: lUnlocked.id }) })).status,
+      ).toBe(403);
+    }
+
+    // :id inválido (no-UUID v4) responde 400 en GET, complete y uncomplete
+    expect(
+      (await getParentLessonHandler(req("/api/parent/lessons/no-es-uuid", { cookie: parentCookie }), { params: Promise.resolve({ id: "no-es-uuid" }) })).status,
+    ).toBe(400);
+    expect(
+      (await completeLessonHandler(req("/api/parent/lessons/no-es-uuid/complete", { method: "POST", cookie: parentCookie, body: { studentIds: [child.id] } }), { params: Promise.resolve({ id: "no-es-uuid" }) })).status,
+    ).toBe(400);
+    expect(
+      (await uncompleteLessonHandler(req("/api/parent/lessons/no-es-uuid/uncomplete", { method: "POST", cookie: parentCookie, body: { studentIds: [child.id] } }), { params: Promise.resolve({ id: "no-es-uuid" }) })).status,
+    ).toBe(400);
+
     // PARENT jamás puede descargar PDF
     expect(
       (await teacherPdfHandler(req(`/api/teacher/units/${activeUnit.id}/pdf`, { cookie: parentCookie }), { params: Promise.resolve({ id: activeUnit.id }) })).status,
@@ -242,11 +272,15 @@ describe("Hito 4 — Matriz RBAC Padres, Historial y Acordeón", () => {
       ).toBe(403);
     }
 
-    // FORCE_UNLOCKED sí abre
+    // FORCE_UNLOCKED sí abre y no expone pdfStorageKey, specialCare ni preferences
     const forceRes = await getParentLessonHandler(req(`/api/parent/lessons/${lForceUnlocked.id}`, { cookie: parentCookie }), {
       params: Promise.resolve({ id: lForceUnlocked.id }),
     });
     expect(forceRes.status).toBe(200);
+    const forceText = await forceRes.text();
+    expect(forceText).not.toContain("active.pdf");
+    expect(forceText).not.toContain("Alergia severa");
+    expect(forceText).not.toContain("Dibujar");
   });
 
   it("padre con todos sus hijos INACTIVE recibe 403 en /api/parent/* pero 200 en /api/auth/me; hijo trasladado ve FINISHED vía historial", async () => {
@@ -321,6 +355,22 @@ describe("Hito 4 — Matriz RBAC Padres, Historial y Acordeón", () => {
 
     expect(
       (await getParentLessonHandler(req(`/api/parent/lessons/${lHist.id}`, { cookie: parentCookie }), { params: Promise.resolve({ id: lHist.id }) })).status,
+    ).toBe(200);
+    expect(
+      (
+        await completeLessonHandler(
+          req(`/api/parent/lessons/${lHist.id}/complete`, { method: "POST", cookie: parentCookie, body: { studentIds: [child.id] } }),
+          { params: Promise.resolve({ id: lHist.id }) },
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await uncompleteLessonHandler(
+          req(`/api/parent/lessons/${lHist.id}/uncomplete`, { method: "POST", cookie: parentCookie, body: { studentIds: [child.id] } }),
+          { params: Promise.resolve({ id: lHist.id }) },
+        )
+      ).status,
     ).toBe(200);
     expect(
       (await getParentLessonHandler(req(`/api/parent/lessons/${lForbiddenA.id}`, { cookie: parentCookie }), { params: Promise.resolve({ id: lForbiddenA.id }) })).status,
@@ -428,12 +478,17 @@ describe("Hito 4 — Visto individual, Completado selectivo (>1 hijo) y sincroni
     );
     expect(hijackRes.status).toBe(403);
 
-    // 4. Mamá marca solo hijo1 -> hijo2 sigue pendiente
+    // 4. Mamá marca solo hijo1 -> hijo2 sigue pendiente; 2do POST idempotente no duplica log
     const compRes = await completeLessonHandler(
       req(`/api/parent/lessons/${lesson.id}/complete`, { method: "POST", cookie: momCookie, body: { studentIds: [hijo1.id] } }),
       { params: Promise.resolve({ id: lesson.id }) },
     );
     expect(compRes.status).toBe(200);
+    const compDupRes = await completeLessonHandler(
+      req(`/api/parent/lessons/${lesson.id}/complete`, { method: "POST", cookie: dadCookie, body: { studentIds: [hijo1.id] } }),
+      { params: Promise.resolve({ id: lesson.id }) },
+    );
+    expect(compDupRes.status).toBe(200);
     const compBody = (await compRes.json()) as {
       eligibleChildren: { id: string; completed: boolean; completedByName: string | null }[];
     };
@@ -454,12 +509,17 @@ describe("Hito 4 — Visto individual, Completado selectivo (>1 hijo) y sincroni
     expect(dadH1?.completedByName).toBe("Mamá Elena");
     expect(dadH2?.completed).toBe(false);
 
-    // 6. Desmarcar hijo1 elimina completado en ambos padres, audita LESSON_UNCOMPLETE y mantiene lesson_views de Mamá
+    // 6. Desmarcar hijo1 elimina completado en ambos padres, audita LESSON_UNCOMPLETE (sin duplicar si se repite) y mantiene lesson_views de Mamá
     const uncompRes = await uncompleteLessonHandler(
       req(`/api/parent/lessons/${lesson.id}/uncomplete`, { method: "POST", cookie: dadCookie, body: { studentIds: [hijo1.id] } }),
       { params: Promise.resolve({ id: lesson.id }) },
     );
     expect(uncompRes.status).toBe(200);
+    const uncompDupRes = await uncompleteLessonHandler(
+      req(`/api/parent/lessons/${lesson.id}/uncomplete`, { method: "POST", cookie: momCookie, body: { studentIds: [hijo1.id] } }),
+      { params: Promise.resolve({ id: lesson.id }) },
+    );
+    expect(uncompDupRes.status).toBe(200);
     const uncompBody = (await uncompRes.json()) as {
       eligibleChildren: { id: string; completed: boolean }[];
     };

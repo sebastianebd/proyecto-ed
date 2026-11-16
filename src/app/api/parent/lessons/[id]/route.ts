@@ -14,7 +14,6 @@ export const GET = withErrorHandling(async (req: NextRequest, ctx: RouteCtx) => 
   if (!authz.ok) return authz.response;
 
   const { user, lesson, unit, className, eligibleChildren } = authz;
-  const now = new Date();
 
   const viewRecord = await db.transaction(async (tx) => {
     const [view] = await tx
@@ -22,8 +21,8 @@ export const GET = withErrorHandling(async (req: NextRequest, ctx: RouteCtx) => 
       .values({
         lessonId: lesson.id,
         parentId: user.id,
-        firstViewedAt: now,
-        lastViewedAt: now,
+        firstViewedAt: sql`now()`,
+        lastViewedAt: sql`now()`,
       })
       .onConflictDoUpdate({
         target: [lessonViews.lessonId, lessonViews.parentId],

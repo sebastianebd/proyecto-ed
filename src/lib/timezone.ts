@@ -52,8 +52,15 @@ const PARTS_FMT = new Intl.DateTimeFormat("en-GB", {
   hour12: false,
 });
 
-/** Formateo determinista DD-MM-YYYY en America/Santiago (seguro para SSR/hidratación). */
+/** Formateo determinista DD-MM-YYYY en America/Santiago (seguro para SSR/hidratación y fechas YYYY-MM-DD). */
 export function formatSantiagoDate(input: string | Date): string {
+  if (typeof input === "string") {
+    const trimmed = input.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      const [y, m, d] = trimmed.split("-");
+      return `${d}-${m}-${y}`;
+    }
+  }
   const parts = Object.fromEntries(PARTS_FMT.formatToParts(new Date(input)).map((p) => [p.type, p.value]));
   return `${parts.day}-${parts.month}-${parts.year}`;
 }

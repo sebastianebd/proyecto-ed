@@ -41,7 +41,7 @@ export function UnitAccordion({ unit, showClassBadge }: { unit: ParentUnitItem; 
             Unidad {unit.orderNumber}: {unit.title}
           </h2>
           <p className="text-xs text-fg-muted">
-            {unlockedCount}/14 disponibles · {completedLessons} completadas
+            {unlockedCount}/{unit.lessons.length} disponibles · {completedLessons} completadas
           </p>
         </div>
         {open ? (

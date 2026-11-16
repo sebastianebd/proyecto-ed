@@ -1,8 +1,8 @@
 "use client";
 
-import { BookOpen, UserCheck } from "lucide-react";
+import { BookOpen, RotateCcw, UserCheck } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { UserProfile } from "@/lib/profile";
 import { UnitAccordion } from "./UnitAccordion";
 import type { ParentUnitsResponse } from "./types";
@@ -15,49 +15,56 @@ export function ParentHomeView({ profile }: { profile: UserProfile }) {
   const [noActiveChildren, setNoActiveChildren] = useState(initialActiveChildren.length === 0);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      if (initialActiveChildren.length === 0) {
-        // Revalidación rápida con /api/auth/me según docs/04 §4 Hito 4
-        await fetch("/api/auth/me").catch(() => null);
+  const loadUnits = useCallback(async (isInitialWithoutActive = false) => {
+    setError(null);
+    if (isInitialWithoutActive) {
+      const meRes = await fetch("/api/auth/me").catch(() => null);
+      if (meRes?.ok) {
+        const meData = (await meRes.json().catch(() => null)) as { user?: UserProfile } | null;
+        const hasActive = meData?.user?.children.some((c) => c.status === "ACTIVE") ?? false;
+        if (!hasActive) return;
+        setNoActiveChildren(false);
+      } else {
         return;
-      }
-
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await fetch("/api/parent/units");
-        if (cancelled) return;
-        if (res.status === 403) {
-          await fetch("/api/auth/me").catch(() => null);
-          setNoActiveChildren(true);
-          return;
-        }
-        if (!res.ok) {
-          const body = (await res.json().catch(() => ({}))) as { error?: string };
-          setError(body.error ?? "No se pudieron cargar las lecciones");
-          return;
-        }
-        const payload = (await res.json()) as ParentUnitsResponse;
-        if (cancelled) return;
-        setData(payload);
-        if (payload.classes.length === 1) {
-          setSelectedClassId(payload.classes[0].classId);
-        }
-      } catch {
-        if (!cancelled) setError("Error de conexión al cargar las unidades");
-      } finally {
-        if (!cancelled) setLoading(false);
       }
     }
 
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, [initialActiveChildren.length]);
+    setLoading(true);
+    try {
+      const res = await fetch("/api/parent/units");
+      if (res.status === 403) {
+        const meRes = await fetch("/api/auth/me").catch(() => null);
+        if (meRes?.ok) {
+          const meData = (await meRes.json().catch(() => null)) as { user?: UserProfile } | null;
+          if (!meData?.user?.children.some((c) => c.status === "ACTIVE")) {
+            setNoActiveChildren(true);
+            return;
+          }
+        }
+        setNoActiveChildren(true);
+        return;
+      }
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        setError(body.error ?? "No se pudieron cargar las lecciones");
+        return;
+      }
+      const payload = (await res.json()) as ParentUnitsResponse;
+      setNoActiveChildren(false);
+      setData(payload);
+      if (payload.classes.length === 1) {
+        setSelectedClassId(payload.classes[0].classId);
+      }
+    } catch {
+      setError("Error de conexión al cargar las unidades");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadUnits(initialActiveChildren.length === 0);
+  }, [initialActiveChildren.length, loadUnits]);
 
   if (noActiveChildren) {
     return (
@@ -148,7 +155,16 @@ export function ParentHomeView({ profile }: { profile: UserProfile }) {
       )}
 
       {error && (
-        <div className="rounded-2xl bg-danger-bg px-4 py-3 text-sm font-medium text-danger">{error}</div>
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-danger-bg px-4 py-3 text-sm font-medium text-danger">
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={() => void loadUnits(false)}
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-xl border border-danger/30 bg-surface px-3 text-xs font-semibold text-danger hover:bg-bg"
+          >
+            <RotateCcw className="h-3.5 w-3.5" /> Reintentar
+          </button>
+        </div>
       )}
 
       {!loading && !error && filteredUnits.length === 0 && (

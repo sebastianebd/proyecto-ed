@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isLessonUnlockedForParent, validateRequestedStudentIds } from "@/lib/parent-rules";
+import { formatSantiagoDate } from "@/lib/timezone";
 import { parentCompleteLessonSchema } from "@/lib/validators";
 
 describe("Hito 4 — Lógica de desbloqueo y selección de alumnos para padres", () => {
@@ -44,5 +45,11 @@ describe("Hito 4 — Lógica de desbloqueo y selección de alumnos para padres",
     expect(
       parentCompleteLessonSchema.safeParse({ studentIds: ["11111111-1111-4111-8111-111111111111"] }).success,
     ).toBe(true);
+  });
+
+  it("H4-01: formatea fechas YYYY-MM-DD sin desfase UTC-4/-3 a día anterior y mantiene timestamps Chile", () => {
+    expect(formatSantiagoDate("2026-05-10")).toBe("10-05-2026");
+    expect(formatSantiagoDate("2026-01-11")).toBe("11-01-2026");
+    expect(formatSantiagoDate("2026-05-11T04:01:00.000Z")).toBe("11-05-2026");
   });
 });

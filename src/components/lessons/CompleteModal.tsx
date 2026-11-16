@@ -68,7 +68,7 @@ export function CompleteModal({
             aria-label="Cerrar"
             disabled={busy}
             onClick={onClose}
-            className="flex h-10 w-10 items-center justify-center rounded-xl text-fg-muted hover:bg-bg"
+            className="flex h-11 w-11 items-center justify-center rounded-xl text-fg-muted hover:bg-bg"
           >
             <X className="h-5 w-5" />
           </button>

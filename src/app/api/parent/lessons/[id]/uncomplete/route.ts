@@ -24,21 +24,24 @@ export const POST = withErrorHandling(async (req: NextRequest, ctx: RouteCtx) =>
   }
 
   await db.transaction(async (tx) => {
-    await tx
+    const deleted = await tx
       .delete(lessonCompletions)
-      .where(and(eq(lessonCompletions.lessonId, lesson.id), inArray(lessonCompletions.studentId, uniqueStudentIds)));
+      .where(and(eq(lessonCompletions.lessonId, lesson.id), inArray(lessonCompletions.studentId, uniqueStudentIds)))
+      .returning({ studentId: lessonCompletions.studentId });
 
-    await recordAuditLog(
-      {
-        actorUserId: user.id,
-        actorRole: user.role,
-        action: "LESSON_UNCOMPLETE",
-        entityType: "lesson",
-        entityId: lesson.id,
-        details: { unitId: unit.id, lessonNumber: lesson.lessonNumber, studentIds: uniqueStudentIds },
-      },
-      tx,
-    );
+    if (deleted.length > 0) {
+      await recordAuditLog(
+        {
+          actorUserId: user.id,
+          actorRole: user.role,
+          action: "LESSON_UNCOMPLETE",
+          entityType: "lesson",
+          entityId: lesson.id,
+          details: { unitId: unit.id, lessonNumber: lesson.lessonNumber, studentIds: deleted.map((r) => r.studentId) },
+        },
+        tx,
+      );
+    }
   });
 
   const childrenState = await loadLessonCompletionState(lesson.id, eligibleChildren);
