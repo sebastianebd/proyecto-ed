@@ -5,36 +5,24 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { PwaInstallSteps } from "@/components/pwa/InstallGuideModal";
 import type { UserProfile } from "@/lib/profile";
+import { detectPushEnvironment, enableBrowserPush, type PushEnvironment } from "@/lib/push-client";
 import { onboardingSchema } from "@/lib/validators";
-
-type PushSupport = "supported" | "ios-not-standalone" | "unsupported";
 
 export function OnboardingWizard({ profile }: { profile: UserProfile }) {
   const router = useRouter();
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [fullName, setFullName] = useState(profile.fullName);
   const [phone, setPhone] = useState(profile.phone ?? "");
-  const [pushSupport, setPushSupport] = useState<PushSupport>("unsupported");
+  const [pushSupport, setPushSupport] = useState<PushEnvironment>("unsupported");
   const [permStatus, setPermStatus] = useState<"default" | "granted" | "denied">("default");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const isIos =
-      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-      (navigator.userAgent.includes("Mac") && navigator.maxTouchPoints > 1);
-    const isStandalone =
-      window.matchMedia("(display-mode: standalone)").matches ||
-      Boolean((navigator as { standalone?: boolean }).standalone);
-    const hasPush = "Notification" in window && "PushManager" in window && "serviceWorker" in navigator;
-
-    if (isIos && !isStandalone) {
-      setPushSupport("ios-not-standalone");
-    } else if (hasPush) {
-      setPushSupport("supported");
+    const env = detectPushEnvironment();
+    setPushSupport(env);
+    if (env === "supported") {
       setPermStatus(Notification.permission);
-    } else {
-      setPushSupport("unsupported");
     }
   }, []);
 
@@ -53,8 +41,8 @@ export function OnboardingWizard({ profile }: { profile: UserProfile }) {
   async function askPushPermission() {
     if (pushSupport !== "supported") return;
     try {
-      const result = await Notification.requestPermission();
-      setPermStatus(result);
+      const result = await enableBrowserPush();
+      setPermStatus(result.permission);
     } catch {
       // No bloqueante.
     }

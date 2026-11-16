@@ -1,10 +1,17 @@
 "use client";
 
-import { Bell, LogOut, Smartphone } from "lucide-react";
+import { Bell, BellOff, CheckCircle2, LogOut, Smartphone } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { InstallGuideModal } from "@/components/pwa/InstallGuideModal";
 import type { UserProfile } from "@/lib/profile";
+import {
+  detectPushEnvironment,
+  disableBrowserPush,
+  enableBrowserPush,
+  getActiveBrowserPushEndpoint,
+  type PushEnvironment,
+} from "@/lib/push-client";
 import { formatRutForInput } from "@/lib/rut";
 
 const ROLE_LABELS = {
@@ -17,6 +24,61 @@ export function ProfileView({ profile }: { profile: UserProfile }) {
   const router = useRouter();
   const [guideOpen, setGuideOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+
+  const [pushEnv, setPushEnv] = useState<PushEnvironment>("unsupported");
+  const [pushActiveHere, setPushActiveHere] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushNotice, setPushNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    const env = detectPushEnvironment();
+    setPushEnv(env);
+    if (env !== "supported") return;
+
+    void (async () => {
+      const endpoint = await getActiveBrowserPushEndpoint();
+      if (!endpoint) return;
+      const res = await fetch(`/api/push/subscribe?endpoint=${encodeURIComponent(endpoint)}`).catch(() => null);
+      if (res?.ok) {
+        const body = (await res.json().catch(() => ({}))) as { endpointRegistered?: boolean };
+        setPushActiveHere(Boolean(body.endpointRegistered));
+      }
+    })();
+  }, []);
+
+  async function handleEnablePush() {
+    setPushBusy(true);
+    setPushNotice(null);
+    try {
+      const res = await enableBrowserPush();
+      if (res.ok) {
+        setPushActiveHere(true);
+        setPushNotice("Notificaciones activadas en este dispositivo.");
+      } else {
+        setPushNotice(res.message);
+      }
+    } catch {
+      setPushNotice("No se pudieron activar las notificaciones en este dispositivo.");
+    } finally {
+      setPushBusy(false);
+    }
+  }
+
+  async function handleDisablePush() {
+    setPushBusy(true);
+    setPushNotice(null);
+    try {
+      const res = await disableBrowserPush();
+      if (res.ok) {
+        setPushActiveHere(false);
+        setPushNotice("Notificaciones desactivadas en este navegador.");
+      } else {
+        setPushNotice(res.error ?? "Error al desactivar notificaciones.");
+      }
+    } finally {
+      setPushBusy(false);
+    }
+  }
 
   async function handleLogout() {
     setLoggingOut(true);
@@ -124,7 +186,7 @@ export function ProfileView({ profile }: { profile: UserProfile }) {
         </section>
       )}
 
-      <section className="space-y-2.5 rounded-2xl border border-border bg-surface p-5">
+      <section className="space-y-3 rounded-2xl border border-border bg-surface p-5">
         <h2 className="text-base font-bold text-fg">Aplicación móvil y avisos</h2>
         <button
           type="button"
@@ -133,10 +195,47 @@ export function ProfileView({ profile }: { profile: UserProfile }) {
         >
           <Smartphone className="h-4 w-4 text-primary" /> Ver guía para instalar la app
         </button>
-        <div className="flex items-start gap-2 rounded-xl bg-tint p-3 text-xs text-tint-text">
-          <Bell className="mt-0.5 h-4 w-4 shrink-0" />
-          <p>La suscripción a notificaciones semanales Web Push quedará habilitada al completar la PWA (Hito 6).</p>
-        </div>
+
+        {pushEnv === "supported" ? (
+          <div className="space-y-2">
+            {pushActiveHere ? (
+              <div className="space-y-2 rounded-xl border border-success/30 bg-success-bg p-3 text-xs">
+                <p className="flex items-center gap-1.5 font-semibold text-success">
+                  <CheckCircle2 className="h-4 w-4 shrink-0" />
+                  Notificaciones Web Push activas en este dispositivo
+                </p>
+                <button
+                  type="button"
+                  disabled={pushBusy}
+                  onClick={() => void handleDisablePush()}
+                  className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-border bg-surface px-4 text-sm font-semibold text-fg hover:bg-locked-bg disabled:opacity-60"
+                >
+                  <BellOff className="h-4 w-4 text-fg-muted" /> Desactivar en este dispositivo
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={pushBusy}
+                onClick={() => void handleEnablePush()}
+                className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-primary bg-tint px-4 text-sm font-semibold text-tint-text hover:bg-tint-border/40 disabled:opacity-60"
+              >
+                <Bell className="h-4 w-4" /> Activar notificaciones los lunes
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="flex items-start gap-2 rounded-xl bg-tint p-3 text-xs text-tint-text">
+            <Bell className="mt-0.5 h-4 w-4 shrink-0" />
+            <p>
+              {pushEnv === "ios-not-standalone"
+                ? "En iPhone/iPad debes abrir la app instalada desde tu pantalla de inicio (Safari → Compartir → Agregar a inicio) para activar notificaciones Push."
+                : "Este navegador no soporta notificaciones Web Push ahora."}
+            </p>
+          </div>
+        )}
+
+        {pushNotice && <p className="rounded-xl bg-bg px-3 py-2 text-xs text-fg">{pushNotice}</p>}
       </section>
 
       <button
